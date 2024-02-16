@@ -1,0 +1,30 @@
+name: Automated Testing
+on:
+    push:
+        branches: testing
+jobs:
+    LinuxTests:
+      name: linuxtests
+      runs-on: thelinuxnative
+      container:
+        image: docker.io/markmac99/rmstestcont:latest
+        env:
+          MYENV: foo
+        ports:
+          - 22
+          - 443
+        volumes:
+          - /data/testing:/data3/testing/RMS_data
+      strategy:
+        matrix:
+          python-version: ["3.7"] #, "3.8", "3.9", "3.10", "3.11"]
+      steps:
+        - uses: actions/checkout@v4
+        - name: Set up Python ${{ matrix.python-version }}
+          uses: actions/setup-python@v5
+          with:
+            python-version: ${{ matrix.python-version }}
+        - name: run tests
+          run: |
+            chmod +x ./Tests/*.sh
+            ./Tests/testFRbin.sh

@@ -29,5 +29,4 @@ jobs:
             ls -ltr Tests
             cd Tests
             pwd
-            chmod +x *.sh
             ./testFRbin.sh

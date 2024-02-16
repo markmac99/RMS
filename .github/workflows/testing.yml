@@ -28,7 +28,7 @@ jobs:
           run: |
               RMSDIR=$(pwd)
               DATADIR=/data/testing
-              apt install python3-dev
+              apt install python${{ matrix.python-version }}-dev
               pip install -r requirements.txt
               pip install opencv-python
               ./Tests/testFRbin.sh $RMSDIR $DATADIR

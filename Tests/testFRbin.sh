@@ -2,29 +2,29 @@
 
 myself=$(readlink -f $0)
 here="$( cd "$(dirname "$myself")" >/dev/null 2>&1 ; pwd -P )"
+
+RMSDIR=$1
+if [ "$RMSDIR" == "" ] ; then echo missing RMSDIR ; exit ; fi
+DATA=$2/frbintests
+if [ "$DATA" == "/frbintests" ] ; then  echo missing DATADIR ; exit ; fi
+cd $RMSDIR
+
 hn=$(hostname)
 if [[ "$hn" == "testpi4" || "$hn" == "testpi5" ]] ; then
-    RMSDIR=/home/pi/source/RMS
+    echo running on $hn
     source ~/.bashrc
     source ~/vRMS/bin/activate
-    cd $RMSDIR
     pip install -r requirements.txt
     python setup.py install
-    DATA=$here/frbintests
 elif [ "$hn" == "MARKSDT" ] ; then 
-    RMSDIR=/mnt/e/dev/meteorhunting/RMS
+    echo running on $hn
     source ~/.bashrc
     conda activate $HOME/miniconda3/envs/RMS
     cd $RMSDIR
     pip install -r requirements.txt
-    DATA=$here/frbintests
 else
-    # docker or ubuntu
-    RMSDIR=$1
-    DATA=$2/frbintests
+    echo running on docker or ubuntu
 fi
-pwd 
-echo $DATA $RMSDIR
 mkdir -p $DATA/results
 rm $DATA/results/FR*.mp4
 python -m Utils.FRbinViewer $DATA/ -x -f mp4 

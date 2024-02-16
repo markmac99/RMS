@@ -1,6 +1,7 @@
 #!/bin/bash
 
-here="$( cd "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+myself=$(readlink -f $0)
+here="$( cd "$(dirname "$myself")" >/dev/null 2>&1 ; pwd -P )"
 hn=$(hostname)
 if [[ "$hn" == "testpi4" || "$hn" == "testpi5" ]] ; then
     RMSDIR=/home/pi/source/RMS
@@ -18,7 +19,7 @@ elif [ "$hn" == "MARKSDT" ] ; then
     pip install -r requirements.txt
     CFG=$here/frbintests/.config
 else
-    echo not supported
+    echo testing not implemented on this platform  $(uname -a) $hn yet
     exit 1
 fi
 mkdir -p $here/frbintests/results

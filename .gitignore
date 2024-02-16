@@ -99,3 +99,4 @@ RMS/Routines/DynamicFTPCompressionCy.c
 RMS/Routines/Grouping3Dcy.c
 RMS/Routines/MorphCy.c
 Utils/SaturationTools.c
+Tests/testdata/**/*.mp4

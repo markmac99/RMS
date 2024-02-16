@@ -10,7 +10,6 @@ if [[ "$hn" == "testpi4" || "$hn" == "testpi5" ]] ; then
     cd $RMSDIR
     pip install -r requirements.txt
     python setup.py install
-    CFG=$RMSDIR/.config
     DATA=$here/frbintests
 elif [ "$hn" == "MARKSDT" ] ; then 
     RMSDIR=/mnt/e/dev/meteorhunting/RMS
@@ -18,16 +17,11 @@ elif [ "$hn" == "MARKSDT" ] ; then
     conda activate $HOME/miniconda3/envs/RMS
     cd $RMSDIR
     pip install -r requirements.txt
-    CFG=$here/frbintests/.config
     DATA=$here/frbintests
 else
     # docker or ubuntu
-    RMSDIR=$(pwd)
-    cd $RMSDIR
-    pip install -r requirements.txt
-    pip install opencv-python
-    CFG=/data/testing/frbintests/.config
-    DATA=/data/testing/frbintests
+    RMSDIR=$1
+    DATA=$2/frbintests
 fi
 pwd 
 echo $DATA $RMSDIR
@@ -39,27 +33,27 @@ ls -1 $DATA/FR*.mp4 | while read i ; do
     mv -f $i $DATA/results/$(basename $i)-noextras.mp4
 done
 # with a config file but no other options - should be the same as basic
-python -m Utils.FRbinViewer $DATA/ -x -f mp4 -c $CFG
+python -m Utils.FRbinViewer $DATA/ -x -f mp4 -c $DATA/.config
 ls -1 $DATA/FR*.mp4 | while read i ; do
     mv -f $i $DATA/results/$(basename $i)-withcfg.mp4
 done
 # add shower name to the video but not the still
-python -m Utils.FRbinViewer $DATA/ -x -f mp4 -w -c $CFG
+python -m Utils.FRbinViewer $DATA/ -x -f mp4 -w -c $DATA/.config
 ls -1 $DATA/FR*.mp4 | while read i ; do
     mv -f $i $DATA/results/$(basename $i)-shwronly.mp4
 done
 # add still  to the video but not the shower name
-python -m Utils.FRbinViewer $DATA/ -x -f mp4 -m -c $CFG
+python -m Utils.FRbinViewer $DATA/ -x -f mp4 -m -c $DATA/.config
 ls -1 $DATA/FR*.mp4 | while read i ; do
     mv -f $i $DATA/results/$(basename $i)-ffonly.mp4
 done
 # add timestamp to the video but not the shower name
-python -m Utils.FRbinViewer $DATA/ -x -f mp4 -t -c $CFG
+python -m Utils.FRbinViewer $DATA/ -x -f mp4 -t -c $DATA/.config
 ls -1 $DATA/FR*.mp4 | while read i ; do
     mv -f $i $DATA/results/$(basename $i)-tsonly.mp4
 done
 # add everything
-python -m Utils.FRbinViewer $DATA/ -x -f mp4 -w -c $CFG -m -t
+python -m Utils.FRbinViewer $DATA/ -x -f mp4 -w -c $DATA/.config -m -t
 ls -1 $DATA/FR*.mp4 | while read i ; do
     mv -f $i $DATA/results/$(basename $i)-shwr_all.mp4
 done

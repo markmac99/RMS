@@ -14,7 +14,7 @@ jobs:
           - 22
           - 443
         volumes:
-          - /data/testing:/data3/testing/RMS_data
+          - /data3/testing/RMS_data:/data/testing
       strategy:
         matrix:
           python-version: ["3.7"] #, "3.8", "3.9", "3.10", "3.11"]

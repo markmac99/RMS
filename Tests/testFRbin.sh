@@ -21,11 +21,11 @@ elif [ "$hn" == "MARKSDT" ] ; then
     CFG=$here/frbintests/.config
     DATA=$here/frbintests
 else
+    # docker or ubuntu
     RMSDIR=$(pwd)
-    source ~/.bashrc
-    conda activate $HOME/miniconda3/envs/RMS
     cd $RMSDIR
     pip install -r requirements.txt
+    pip install opencv-python
     CFG=/data/testing/frbintests/.config
     DATA=/data/testing/frbintests
 fi

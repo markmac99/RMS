@@ -26,7 +26,5 @@ jobs:
             python-version: ${{ matrix.python-version }}
         - name: run tests
           run: |
-            ls -ltr Tests
             cd Tests
-            pwd
             ./testFRbin.sh

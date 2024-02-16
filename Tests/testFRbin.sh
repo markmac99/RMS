@@ -1,7 +1,6 @@
 #!/bin/bash
 
-myself=$(readlink -f $0)
-here="$( cd "$(dirname "$myself")" >/dev/null 2>&1 ; pwd -P )"
+here="$( cd "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 hn=$(hostname)
 if [[ "$hn" == "testpi4" || "$hn" == "testpi5" ]] ; then
     RMSDIR=/home/pi/source/RMS

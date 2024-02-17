@@ -42,6 +42,7 @@ jobs:
               RMSDIR=$(pwd)
               DATADIR=/data/testing
               rsync -avz thelinux:/data3/testing/RMS_data/ $DATADIR
+              source ~/vRMS/bin/activate
               python -V 
               pip install -r requirements.txt
               ./Tests/testFRbin.sh $RMSDIR $DATADIR

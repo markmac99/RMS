@@ -36,11 +36,31 @@ jobs:
         matrix:
           python-version: ["3.7"] #, "3.8", "3.9", "3.10", "3.11"]
       steps:
-        - uses: actions/checkout@v3 # cant upgrade as node20 not supported on buster
+        - uses: actions/checkout@v3 # cant upgrade as node20 not supported on raspian buster
         - name: run tests
           run: |
               RMSDIR=$(pwd)
-              DATADIR=/data/testing
+              DATADIR=~/RMS_data/testdata
+              mkdir -p $DATADIR
+              rsync -avz thelinux:/data3/testing/RMS_data/ $DATADIR
+              source ~/vRMS/bin/activate
+              python -V 
+              pip install -r requirements.txt
+              ./Tests/testFRbin.sh $RMSDIR $DATADIR
+              ./Tests/testGenMP4s.sh $RMSDIR $DATADIR
+    Pi64Tests:
+      name: pitests-64bit
+      runs-on: testpi5
+      strategy:
+        matrix:
+          python-version: ["3.7"] #, "3.8", "3.9", "3.10", "3.11"]
+      steps:
+        - uses: actions/checkout@v4
+        - name: run tests
+          run: |
+              RMSDIR=$(pwd)
+              DATADIR=~/RMS_data/testdata
+              mkdir -p $DATADIR
               rsync -avz thelinux:/data3/testing/RMS_data/ $DATADIR
               source ~/vRMS/bin/activate
               python -V 

@@ -100,3 +100,4 @@ RMS/Routines/Grouping3Dcy.c
 RMS/Routines/MorphCy.c
 Utils/SaturationTools.c
 Tests/testdata/**/*.mp4
+testcontainer/keys/testpi4

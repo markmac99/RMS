@@ -502,7 +502,7 @@ class BufferedCapture(Process):
         #               "location=\"{}\" ! rtpjitterbuffer latency=1000 mode=1 ! "
         #               "rtph264depay ! h264parse ! avdec_h264").format(device_url)
 
-        device_str = ("rtspsrc  buffer-mode=1 protocols=tcp tcp-timeout=5000000 retry=5 "
+        device_str = ("rtspsrc  buffer-mode=1 protocols=udp retry=5 "
                       "location=\"{}\" ! "
                       "rtph264depay ! h264parse ! avdec_h264").format(device_url)
 

@@ -5,15 +5,17 @@ from __future__ import print_function, division, absolute_import
 import os
 import sys
 import math
+import time
 
 import numpy as np
 import scipy.misc
+import scipy.ndimage
 import cv2
 
 from PIL import Image, ImageFont, ImageDraw 
 import datetime
 
-# Check which imread funtion to use
+# Check which imread function to use
 try:
     imread = scipy.misc.imread
     imsave = scipy.misc.imsave
@@ -39,6 +41,63 @@ import pyximport
 pyximport.install(setup_args={'include_dirs':[np.get_include()]})
 import RMS.Routines.MorphCy as morph
 from RMS.Routines.BinImageCy import binImage as binImageCy
+
+
+
+class CoordinateFilter:
+    def __init__(self, image_shape, mask, border):
+        """
+        Initializes the CoordinateFilter with image properties and computes the distance map.
+
+        Arguments:
+            image_shape: [tuple] Shape of the image (height, width).
+            mask: [np.ndarray] Binary mask where black (0) = masked out, white (255) = clear.
+            border: [float] Distance threshold in pixels.
+        """
+        self.image_shape = image_shape
+        self.mask = mask
+        self.border = border
+
+        h, w = image_shape
+
+        # Create a binary mask for borders
+        border_mask = np.zeros(image_shape, dtype=bool)
+
+        # Define the border mask using floating-point precision
+        y_indices, x_indices = np.indices(image_shape)
+        border_mask |= (x_indices < border) | (x_indices > (w - border))
+        border_mask |= (y_indices < border) | (y_indices > (h - border))
+
+        # Combine the border mask with the given mask
+        if mask is None:
+            self.combined_mask = border_mask
+        else:
+            self.combined_mask = (mask == 0) | border_mask
+
+        # Compute Manhattan distance from the clear (non-masked) regions
+        self.distance_map = scipy.ndimage.distance_transform_cdt(~self.combined_mask, 
+                                                                metric='taxicab').astype(float)
+
+    def filterCoordinates(self, coords):
+        """
+        Filters out coordinates based on the precomputed distance map and border thresholds.
+
+        Arguments:
+            coords: [array-like] List of (x, y) coordinates to filter.
+
+        Returns:
+            (filtered_coords, valid_flags):
+                - np.ndarray: Filtered array of coordinates.
+                - np.ndarray: Boolean flags indicating which coordinates are valid.
+        """
+        
+        coords_test = np.array(coords).astype(int)
+        valid_flags = np.array([self.distance_map[y, x] > 0 for x, y in coords_test])
+
+        filtered_coords = coords[valid_flags]
+
+        return filtered_coords, valid_flags
+
 
 
 def loadRaw(img_path):
@@ -84,7 +143,22 @@ def loadImage(img_path, flatten=-1):
     else:
 
         try:
-            img = imread(img_path, as_gray=bool(flatten))
+            img = imread(img_path)
+
+            # Convert to grayscale
+            if flatten == -1:
+
+                # Convert RGB images to grayscale
+                if img.ndim == 3:
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+                # Handle 16 bit images
+                elif (img.ndim == 2) and ((img.dtype == np.uint16) or (img.dtype == np.int32)):
+                    img = img.astype(np.uint16)
+
+                # Otherwise, just convert the time to 8 bit
+                else:
+                    img = img.astype(np.uint8)
 
         except TypeError:
             
@@ -163,6 +237,61 @@ def binImage(img, bin_factor, method='avg'):
 
 
 
+
+# Define the fallback function using NumPy
+def applyThresholdNumpy(img_avg_sub, stdpixel, k1, j1):
+    """Apply thresholding to the image using NumPy.
+    
+    Arguments:
+        img_avg_sub: [ndarray] Image with average subtracted.
+        stdpixel: [float] Standard deviation of pixels.
+        k1: [float] Multiplication factor for standard deviation.
+        j1: [float] Constant to add to the threshold.
+    """
+
+    threshold = k1*stdpixel + j1
+    img_thresh = np.greater(img_avg_sub, threshold)
+
+    return img_thresh
+
+# Try importing Numba and define the Numba-optimized function if possible
+try:
+    from numba import njit
+
+    @njit
+    def applyThresholdNumba(img_avg_sub, stdpixel, k1, j1):
+        """Apply thresholding to the image using Numba for JIT compilation.
+        
+        Arguments:
+            img_avg_sub: [ndarray] Image with average subtracted.
+            stdpixel: [float] Standard deviation of pixels.
+            k1: [float] Multiplication factor for standard deviation.
+            j1: [float] Constant to add to the threshold.
+        """
+
+        height, width = img_avg_sub.shape
+        img_thresh = np.zeros((height, width), dtype=np.bool_)
+
+        for i in range(height):
+            for j in range(width):
+
+                threshold = int(k1*stdpixel[i, j] + j1)
+
+                img_thresh[i, j] = img_avg_sub[i, j] > threshold
+
+        return img_thresh
+
+    # If Numba is available, use the Numba-optimized function
+    applyImgThreshold = applyThresholdNumba
+
+except ImportError:
+
+    # If Numba is not available, use the fallback NumPy function
+    applyImgThreshold = applyThresholdNumpy
+
+
+
+
 def thresholdImg(img, avepixel, stdpixel, k1, j1, ff=False, mask=None, mask_ave_bright=True):
     """ Threshold the image with given parameters.
     
@@ -172,7 +301,7 @@ def thresholdImg(img, avepixel, stdpixel, k1, j1, ff=False, mask=None, mask_ave_
         stdpixel: [2D ndarray]
         k1: [float] relative thresholding factor (how many standard deviations above mean the maxpixel image 
             should be)
-        j1: [float] absolute thresholding factor (how many minimum abuolute levels above mean the maxpixel 
+        j1: [float] absolute thresholding factor (how many minimum absolute levels above mean the maxpixel 
             image should be)
 
     Keyword arguments:
@@ -194,8 +323,7 @@ def thresholdImg(img, avepixel, stdpixel, k1, j1, ff=False, mask=None, mask_ave_
         img_avg_sub = applyDark(img, avepixel)
 
     # Compute the thresholded image
-    img_thresh = img_avg_sub > (k1 * stdpixel + j1)
-
+    img_thresh = applyImgThreshold(img_avg_sub, stdpixel, k1, j1)
 
     # Mask out regions that are very bright in avepixel
     if mask_ave_bright:
@@ -211,7 +339,7 @@ def thresholdImg(img, avepixel, stdpixel, k1, j1, ff=False, mask=None, mask_ave_
         img_thresh = img_thresh & ~ave_saturation_mask
 
 
-    # If the mask was given, set all areas of the thresholded image convered by the mask to false
+    # If the mask was given, set all areas of the thresholded image covered by the mask to false
     if mask is not None:
         if img_thresh.shape == mask.img.shape:
             img_thresh[mask.img == 0] = False
@@ -228,7 +356,7 @@ def thresholdFF(ff, k1, j1, mask=None, mask_ave_bright=False):
         ff: [FF object] input FF image object on which the thresholding will be applied
         k1: [float] relative thresholding factor (how many standard deviations above mean the maxpixel image 
             should be)
-        j1: [float] absolute thresholding factor (how many minimum abuolute levels above mean the maxpixel 
+        j1: [float] absolute thresholding factor (how many minimum absolute levels above mean the maxpixel 
             image should be)
 
     Keyword arguments:
@@ -245,9 +373,8 @@ def thresholdFF(ff, k1, j1, mask=None, mask_ave_bright=False):
 
 
 
-@np.vectorize
-def gammaCorrection(intensity, gamma, bp=0, wp=255):
-    """ Correct the given intensity for gamma. 
+def gammaCorrectionScalar(intensity, gamma, bp=0, wp=255):
+    """ Correct the given intensity for gamma on individual scalar values.
         
     Arguments:
         intensity: [int] Pixel intensity
@@ -269,11 +396,49 @@ def gammaCorrection(intensity, gamma, bp=0, wp=255):
     if x > 0:
 
         # Compute the corrected intensity
-        return bp + (wp - bp)*(x**(1.0/gamma))
+        out = bp + (wp - bp)*(x**(1.0/gamma))
 
     else:
-        return bp
+        out = bp
 
+    return out
+
+
+def gammaCorrectionImage(intensity, gamma, bp=0, wp=255):
+    """ Correct the given image for gamma on numpy arrays (faster than the single pixel function).
+    """
+
+    # If the intensity is a numpy array, save the original type
+    orig_type = None
+    if isinstance(intensity, np.ndarray):
+        orig_type = intensity.dtype
+
+        # Convert the intensity to float if it's not already
+        intensity = intensity.astype(np.float32)
+
+    
+    # Clip intensities < 0 to 0
+    intensity[intensity < 0] = 0
+
+    # Apply the gamma correction
+    x = (intensity - bp)/(wp - bp)
+
+    # Scale the gamma to the given range
+    out = np.zeros_like(intensity) + bp
+    out[x > 0] = bp + (wp - bp)*(x[x > 0]**(1.0/gamma))
+
+
+    # If the intensity was a numpy array, convert it back to the original type
+    if orig_type is not None:
+
+        # Clip the range to the range of the original type if the type is integer (leave float as is)
+        if np.issubdtype(orig_type, np.integer):
+            out = np.clip(out, 0, np.iinfo(orig_type).max)
+        
+        # Convert the intensity back to the original type
+        out = out.astype(orig_type)
+
+    return out
 
 
 def applyBrightnessAndContrast(img, brightness, contrast):
@@ -568,7 +733,7 @@ def loadDark(dir_path, file_name, dtype=None, byteswap=False):
     """ Load the dark frame. 
 
     Arguments:
-        dir_path: [str] Path to the directory which containes the dark frame.
+        dir_path: [str] Path to the directory which contains the dark frame.
         file_name: [str] Name of the dark frame file.
 
     Keyword arguments:
@@ -626,23 +791,13 @@ def applyDark(img, dark_img):
     # Check that the image sizes are the same
     if img.shape != dark_img.shape:
         return img
+    
+    # Make sure that the dark is the same dtype as the input image
+    if dark_img.dtype != img.dtype:
+        dark_img = dark_img.astype(img.dtype)
 
-
-    # Save input type
-    input_type = img.dtype
-
-
-    # Convert the image to integer (with negative values)
-    img = img.astype(np.int64)
-
-    # Subtract dark
-    img -= dark_img.astype(np.int64)
-
-    # Make sure there aren't any values smaller than 0
-    img[img < 0] = 0
-
-    # Convert the image back to the input type
-    img = img.astype(input_type)
+    # Use cv2.subtract to subtract the images and ensure no negative values
+    img = cv2.subtract(img, dark_img)
 
 
     return img
@@ -807,7 +962,23 @@ def thickLine(img_h, img_w, x_cent, y_cent, length, rotation, radius):
     return photom_mask
 
 
+def signalToNoise(source_intens, source_px_count, bg_median, bg_std):
+    """ Compute the signal to noise ratio using the "CCD equation" (Howell et al., 1989).
 
+    Arguments:
+        source_intens: [float] Source intensity (integrated, background subtracted).
+        source_px_count: [int] Number of source pixels.
+        bg_median: [float] Background median.
+        bg_std: [float] Background standard deviation.
+
+    Return:
+        [float] Signal to noise ratio.
+    """
+    
+    # Compute the SNR using the "CCD equation" (Howell et al., 1989)
+    snr = source_intens/(math.sqrt(source_intens + source_px_count*(bg_median + bg_std**2)))
+
+    return snr
 
 
 

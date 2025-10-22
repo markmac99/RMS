@@ -40,6 +40,7 @@ import numpy as np
 import scipy.optimize
 
 from RMS.Math import vectMag, vectNorm
+from RMS.Misc import UTCFromTimestamp
 
 # Import Cython functions
 import pyximport
@@ -63,7 +64,7 @@ class EARTH_CONSTANTS(object):
 
     def __init__(self):
 
-        # Earth elipsoid parameters in meters (source: WGS84, the GPS standard)
+        # Earth ellipsoid parameters in meters (source: WGS84, the GPS standard)
         self.EQUATORIAL_RADIUS = 6378137.0
         self.POLAR_RADIUS = 6356752.314245
         self.E = math.sqrt(1.0 - self.POLAR_RADIUS**2/self.EQUATORIAL_RADIUS**2)
@@ -84,7 +85,7 @@ def floatArguments(func):
     """ A decorator that converts all function arguments to float.
 
     @param func: a function to be decorated
-    @return :[funtion object] the decorated function
+    @return :[function object] the decorated function
     """
 
     def inner_func(*args):
@@ -114,7 +115,7 @@ def unixTime2Date(ts, tu, dt_obj=False):
     """
 
     # Convert the UNIX timestamp to datetime object
-    dt = datetime.utcfromtimestamp(float(ts) + float(tu)/1000000)
+    dt = UTCFromTimestamp.utcfromtimestamp(float(ts) + float(tu)/1000000)
 
     if dt_obj:
         return dt
@@ -257,24 +258,24 @@ def jd2UnixTime(jd, UT_corr=0):
 
 
 def JD2LST(julian_date, lon):
-    """ Convert Julian date to Local Sidreal Time and Greenwich Sidreal Time.
+    """ Convert Julian date to Local Sidereal Time and Greenwich Sidereal Time.
 
     Arguments;
         julian_date: [float] decimal julian date, epoch J2000.0
         lon: [float] longitude of the observer in degrees
 
     Return:
-        [tuple]: (LST, GST): [tuple of floats] a tuple of Local Sidreal Time and Greenwich Sidreal Time
+        [tuple]: (LST, GST): [tuple of floats] a tuple of Local Sidereal Time and Greenwich Sidereal Time
             (degrees)
     """
 
     t = (julian_date - J2000_JD.days)/36525.0
 
-    # Greenwich Sidreal Time
+    # Greenwich Sidereal Time
     GST = 280.46061837 + 360.98564736629*(julian_date - 2451545) + 0.000387933*t**2 - ((t**3)/38710000)
     GST = (GST + 360)%360
 
-    # Local Sidreal Time
+    # Local Sidereal Time
     LST = (GST + lon + 360)%360
 
     return LST, GST
@@ -349,11 +350,11 @@ def latLonAlt2ECEF(lat, lon, h):
 @floatArguments
 def geo2Cartesian(lat, lon, h, julian_date):
     """ Convert geographical Earth coordinates to Cartesian ECI coordinate system (Earth center as origin).
-        The Earth is considered as an elipsoid.
+        The Earth is considered as an ellipsoid.
     
     Arguments:
         lat_rad: [float] Latitude of the observer in degrees (+N), WGS84.
-        lon_rad: [float] Longitde of the observer in degrees (+E), WGS84.
+        lon_rad: [float] Longitude of the observer in degrees (+E), WGS84.
         h: [int or float] Elevation of the observer in meters (WGS84 convention).
         julian_date: [float] Julian date, epoch J2000.0.
     
@@ -369,13 +370,13 @@ def geo2Cartesian(lat, lon, h, julian_date):
     ecef_x, ecef_y, ecef_z = latLonAlt2ECEF(lat_rad, lon_rad, h)
 
 
-    # Get Local Sidreal Time
+    # Get Local Sidereal Time
     LST_rad = math.radians(JD2LST(julian_date, np.degrees(lon_rad))[0])
 
     # Calculate the Earth radius at given latitude
     Rh = math.sqrt(ecef_x**2 + ecef_y**2 + ecef_z**2)
 
-    # Calculate the geocentric latitude (latitude which considers the Earth as an elipsoid)
+    # Calculate the geocentric latitude (latitude which considers the Earth as an ellipsoid)
     lat_geocentric = math.atan2(ecef_z, math.sqrt(ecef_x**2 + ecef_y**2))
 
     # Calculate Cartesian ECI coordinates (in meters), in the epoch of date
@@ -440,8 +441,8 @@ def ECEF2AltAz(s_vect, p_vect):
     Source: https://gis.stackexchange.com/a/58926
     
     Arguments:
-        s_vect: [ndarray] sx, sy, sz - S point ECEF coordiantes
-        p_vect: [ndarray] px, py, pz - P point ECEF coordiantes
+        s_vect: [ndarray] sx, sy, sz - S point ECEF coordinates
+        p_vect: [ndarray] px, py, pz - P point ECEF coordinates
 
     Return:
         (azim, alt): Horizontal coordinates in degrees.
@@ -662,6 +663,61 @@ def AEH2LatLonAlt(azim, elev, h, lat, lon, alt):
     return r, lat2, lon2, alt2
 
 
+def AEGeoidH2LatLonAlt(azim, elev, h, lat, lon, alt):
+    """ Given an azimuth and altitude, and Height above Geoid compute lat, lon, and lat to a point.
+
+    Arguments:
+        azim: [float] Azimuth (+E of due N) in degrees.
+        elev: [float] Elevation in degrees.
+        h: [float] Height of the point above the geoid (meters).
+        lat: [float] Latitude of observer in degrees.
+        lon: [float] Longitude of observer in degrees.
+        alt: [float] Altitude of observer in meters.
+
+    Return:
+        (lat, lon): [tuple of floats] latitude and longitude in degrees
+
+    """
+
+    # Convert azimuth and elevation to radians
+    azim = np.radians(azim)
+    elev = np.radians(elev)
+    lat = np.radians(lat)
+    lon = np.radians(lon)
+
+    # Convert observer's geodetic coordinates to ECEF
+    obs_x, obs_y, obs_z = latLonAlt2ECEF(lat, lon, alt)
+
+    # Calculate line-of-sight unit vector in ENU coordinates
+    los_vector_enu = np.array([
+        np.cos(elev)*np.sin(azim),  # East component
+        np.cos(elev)*np.cos(azim),  # North component
+        np.sin(elev)                # Up component
+    ])
+
+    # Transform ENU to ECEF coordinates
+    R_enu2ecef = np.array([
+        [-np.sin(lon),  -np.sin(lat)*np.cos(lon),  np.cos(lat)*np.cos(lon)],
+        [np.cos(lon), -np.sin(lat)*np.sin(lon),  np.cos(lat)*np.sin(lon)],
+        [0, np.cos(lat), np.sin(lat)]
+    ])
+
+    los_vector = np.dot(R_enu2ecef, los_vector_enu)
+
+    # Compute the range to the point
+    r = (h - alt)/np.sin(elev)
+    
+    # Find the target ECEF coordinates using the optimized range
+    target_x = obs_x + r*los_vector[0]
+    target_y = obs_y + r*los_vector[1]
+    target_z = obs_z + r*los_vector[2]
+      
+    # Convert target ECEF coordinates to geodetic coordinates
+    target_lat, target_lon, h2 = ecef2LatLonAlt(target_x, target_y, target_z)
+    target_lat, target_lon = np.degrees(target_lat), np.degrees(target_lon)
+
+    return target_lat, target_lon
+
 
 def cartesian2Geo(julian_date, x, y, z):
     """ Convert Cartesian ECI coordinates of a point (origin in Earth's centre) to geographical coordinates.
@@ -776,11 +832,11 @@ def raDec2Vector(ra, dec):
 
 
 def vector2RaDec(eci):
-    """ Convert Earth-centered intertial vector to right ascension and declination.
+    """ Convert Earth-centered inertial vector to right ascension and declination.
     Arguments:
         eci: [3 element ndarray] Vector coordinates in Earth-centered inertial system
     Return:
-        (ra, dec): [tuple of floats] right ascension and declinaton (degrees)
+        (ra, dec): [tuple of floats] right ascension and declination (degrees)
     """
 
     # Normalize the ECI coordinates
@@ -803,7 +859,7 @@ def altAz2RADec(azim, elev, jd, lat, lon):
         elev: [float] elevation above horizon in degrees
         jd: [float] Julian date
         lat: [float] latitude of the observer in degrees
-        lon: [float] longitde of the observer in degrees
+        lon: [float] longitude of the observer in degrees
     Return:
         (RA, dec): [tuple]
             RA: [float] right ascension (degrees)
@@ -832,7 +888,7 @@ def apparentAltAz2TrueRADec(azim, elev, jd, lat, lon, refraction=True):
         elev: [float] Elevation above horizon in degrees (epoch of date).
         jd: [float] Julian date.
         lat: [float] Latitude of the observer in degrees.
-        lon: [float] Longitde of the observer in degrees.
+        lon: [float] Longitude of the observer in degrees.
     Keyword arguments:
         refraction: [bool] Apply refraction correction. True by default.
     Return:
@@ -956,7 +1012,7 @@ def geocentricToApparentRadiantAndVelocity(ra_g, dec_g, vg, lat, lon, elev, jd, 
     # Assume that the velocity at infinity corresponds to the initial velocity
     v_init = np.sqrt(vg**2 + (2*6.67408*5.9722)*1e13/vectMag(state_vector))
 
-    # Calculate the geocentric latitude (latitude which considers the Earth as an elipsoid) of the reference
+    # Calculate the geocentric latitude (latitude which considers the Earth as an ellipsoid) of the reference
     # trajectory point
     lat_geocentric = np.degrees(math.atan2(eci_z, math.sqrt(eci_x**2 + eci_y**2)))
 

@@ -30,20 +30,36 @@ from RMS.Formats.Vid import readFrame as readVidFrame
 from RMS.Formats.Vid import VidStruct
 from RMS.GeoidHeightEGM96 import wgs84toMSLHeight
 from RMS.Routines import Image
+from RMS.Routines.GstreamerCapture import GstVideoFile
 
 
-# Try importaing a Qt message box if available
-try:
-    from RMS.Routines.CustomPyqtgraphClasses import qmessagebox as messagebox
-except:
+# If there is not display, messagebox will simply print to the console
+if os.environ.get('DISPLAY') is None:
+    messagebox = lambda title, message: print(title + ': ' + message)
 
-    # Otherwise import a tk message box
-    # tkinter import that works on both Python 2 and 3
+else:
+
+    # Try importing a Qt message box if available
     try:
-        from tkinter import messagebox
+        from RMS.Routines.CustomPyqtgraphClasses import qmessagebox as messagebox
     except:
-        import tkMessageBox as messagebox
 
+        # Otherwise import a tk message box
+        # tkinter import that works on both Python 2 and 3
+        try:
+            from tkinter import messagebox
+        except:
+            import tkMessageBox as messagebox
+
+
+GST_IMPORTED = False
+try:
+    import gi
+    gi.require_version('Gst', '1.0')
+    from gi.repository import Gst
+    GST_IMPORTED = True
+except:
+    pass
 
 # Import cython functions
 import pyximport
@@ -63,7 +79,7 @@ def getCacheID(first_frame, size):
     return "first:{:d},size:{:d}".format(int(first_frame), int(size))
 
 
-def computeFramesToRead(read_nframes, total_frames, fr_chunk_no, first_frame):
+def computeFramesToRead(read_nframes, total_frames, chunk_frames, first_frame):
     ### Compute the number of frames to read
 
     if read_nframes == -1:
@@ -73,7 +89,7 @@ def computeFramesToRead(read_nframes, total_frames, fr_chunk_no, first_frame):
 
         # If the number of frames to read was not given, use the default value
         if read_nframes is None:
-            frames_to_read = fr_chunk_no
+            frames_to_read = chunk_frames
 
         else:
             frames_to_read = read_nframes
@@ -229,6 +245,9 @@ class InputTypeFRFF(InputType):
         # Number for frames to read by default
         self.total_frames = 256
 
+        # Total chunks (i.e. FF files)
+        self.total_fr_chunks = len(self.ff_list)
+
         # Cahcne for whole FF files
         self.cache = {}
 
@@ -256,8 +275,9 @@ class InputTypeFRFF(InputType):
     def nrows(self, nrows):
         self.__nrows = nrows
         for file in self.cache.keys():
-            if self.cache[file].nrows is None:
-                self.cache[file].nrows = nrows
+            if self.cache[file] is not None:
+                if self.cache[file].nrows is None:
+                    self.cache[file].nrows = nrows
 
     @property
     def ncols(self):
@@ -290,7 +310,7 @@ class InputTypeFRFF(InputType):
 
         Keyword arguments:
             first_frame: [int] First frame to read.
-            read_nframes: [int] Number of frames to read. If not given (None), self.fr_chunk_no frames will be
+            read_nframes: [int] Number of frames to read. If not given (None), self.chunk_frames frames will be
                 read. If -1, all frames will be read in.
         """
 
@@ -391,7 +411,7 @@ class InputTypeFRFF(InputType):
                     avepixel_list.append(avepixel)
                     stdpixel_list.append(ff_temp.stdpixel)
 
-                # Immidiately extract the appropriate frames
+                # Immediately extract the appropriate frames
                 if len(maxpixel_list) == 1:
 
                     ff.maxpixel = maxpixel_list[0]
@@ -458,7 +478,7 @@ class InputTypeFRFF(InputType):
                                               int(fr_files[fr].yc[line][i] + fr_files[fr].size[line][i]//2))
                             X_img, Y_img = np.meshgrid(x_img, y_img)
 
-                            # Compute FR frame coordiantes
+                            # Compute FR frame coordinates
                             y_frame = np.arange(len(y_img))
                             x_frame = np.arange(len(x_img))
                             Y_frame, X_frame = np.meshgrid(y_frame, x_frame)
@@ -530,14 +550,34 @@ class InputTypeFRFF(InputType):
 
         return self.ff_list[self.current_ff_index]
 
-    def currentTime(self, dt_obj=False):
-        """ Return the middle time of the current image. """
+    def currentTime(self, dt_obj=False, beginning=False):
+        """ Return the middle time of the current image. 
+        
+        Keyword arguments:
+            dt_obj: [bool] If True, a datetime object will be returned instead of a tuple.
+            beginning: [bool] If True, the beginning time of the file will be returned instead of the middle
+                time of the chunk.
+        """
 
-        if dt_obj:
-            return datetime.datetime(*getMiddleTimeFF(self.name(), self.fps, ret_milliseconds=False))
+        # Get the datetime of the beginning of the FF file
+        if beginning:
 
+            dt = filenameToDatetime(self.name(), middle=False)
+
+            if dt_obj:
+                return dt
+            else:
+                return dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond
+
+        # Get the middle time of the FF file
         else:
-            return getMiddleTimeFF(self.name(), self.fps, ret_milliseconds=True)
+
+            if dt_obj:
+
+                return datetime.datetime(*getMiddleTimeFF(self.name(), self.fps, ret_milliseconds=False))
+
+            else:
+                return getMiddleTimeFF(self.name(), self.fps, ret_milliseconds=True)
 
     def nextLine(self):
         self.current_line = (self.current_line + 1)%self.line_number[self.current_ff_index]
@@ -683,7 +723,8 @@ class InputTypeFRFF(InputType):
 
 
 class InputTypeVideo(InputType):
-    def __init__(self, dir_path, config, beginning_time=None, detection=False):
+    def __init__(self, dir_path, config, beginning_time=None, detection=False, preload_video=False, 
+                 flipud=False, chunk_frames=None):
         """ Input file type handle for video files.
         
         Arguments:
@@ -694,7 +735,10 @@ class InputTypeVideo(InputType):
             beginning_time: [datetime] datetime of the beginning of the video. Optional, None by default.
             detection: [bool] Indicates that the input is used for detection. False by default. This will
                 control whether the binning is applied or not.
-
+            preload_video: [bool] If True, the whole video will be loaded into memory. False by default.
+                Only use for small videos due to memory constraints.
+            flipud: [bool] If True, the video frames will be flipped upside down. False by default.
+            chunk_frames: [int] Number of frames to be used for averaging and maxpixels. 256 by default.
         """
 
         self.input_type = 'video'
@@ -704,6 +748,16 @@ class InputTypeVideo(InputType):
         self.dir_path, self.file_name = os.path.split(dir_path)
 
         self.config = config
+
+        self.preload_video = preload_video
+
+        self.flipud = flipud
+
+        # Set the number of frames to be used for averaging and maxpixels
+        if chunk_frames is None:
+            chunk_frames = 256
+        self.chunk_frames = chunk_frames
+
 
         self.ff = None
 
@@ -718,16 +772,26 @@ class InputTypeVideo(InputType):
 
         if beginning_time is None:
 
-            # Try reading the beginning time of the video from the name if time is not given
-            try:
-                self.beginning_datetime = datetime.datetime.strptime(file_name_noext, "%Y%m%d_%H%M%S.%f")
-            
-            except ValueError:
+            time_formats_to_try = ["%Y%m%d_%H%M%S.%f", "%Y%m%d_%H%M%S", "%Y%m%d-%H%M%S.%f", "%Y%m%d-%H%M%S"]
+            self.beginning_datetime = None
 
+            for fmt in time_formats_to_try:
                 try:
-                    self.beginning_datetime = datetime.datetime.strptime(file_name_noext, "%Y%m%d_%H%M%S")
+                    self.beginning_datetime = datetime.datetime.strptime(file_name_noext, fmt)
+                    break
+                except ValueError:
+                    pass
 
-                except:
+            # If no formats matched, try the RMS video file format, e.g. CAWE01_20240611_020430_954145_video.mkv
+            if self.beginning_datetime is None:
+                
+                try:
+                    fn_data = file_name_noext.split('_')
+                    fn_timestamp = fn_data[1] + '_' + fn_data[2] + '_' + fn_data[3]
+                    self.beginning_datetime = datetime.datetime.strptime(fn_timestamp, "%Y%m%d_%H%M%S_%f")
+
+                except ValueError:
+
                     messagebox(title="Input error", \
                     message="The time of the beginning cannot be read from the file name! Either change the name of the file to be in the YYYYMMDD_hhmmss format, or specify the beginning time using command line options.")
 
@@ -740,8 +804,17 @@ class InputTypeVideo(InputType):
 
         print('Using video file:', self.file_path)
 
-        # Open the video file
-        self.cap = cv2.VideoCapture(self.file_path)
+
+        # If gstreamer is available and the media backend is set to gst, use it
+        if GST_IMPORTED and (self.config.media_backend == 'gst'):
+
+            self.cap = GstVideoFile(self.file_path, decoder=self.config.gst_decoder,
+                                        video_format="BGR")
+
+        else:
+
+            # Open the video file
+            self.cap = cv2.VideoCapture(self.file_path)
 
         self.current_frame_chunk = 0
 
@@ -765,19 +838,30 @@ class InputTypeVideo(InputType):
         print('FPS from video:', self.fps)
         print('Total frames:', self.total_frames)
 
-        # Set the number of frames to be used for averaging and maxpixels
-        self.fr_chunk_no = 256
-
         # Compute the number of frame chunks
-        self.total_fr_chunks = self.total_frames//self.fr_chunk_no
+        self.total_fr_chunks = self.total_frames//self.chunk_frames
         if self.total_fr_chunks == 0:
             self.total_fr_chunks = 1
 
-        self.current_fr_chunk_size = self.fr_chunk_no
+        self.current_fr_chunk_size = self.chunk_frames
 
         self.current_frame = 0
 
         self.cache = {}
+
+        # List for storing the video frames if needed
+        self.video_frames = []
+
+        # Preload the video into memory if needed
+        if self.preload_video:
+            
+            print()
+            print("Loading the full video into memory...")
+
+            memory_size_mb = self.nrows*self.ncols*self.total_frames/1024/1024
+            print("Memory needed: {:.2f} MB".format(memory_size_mb))
+
+            self.video_frames = self.loadFullVideo()
 
         # Load the initial chunk
         self.loadChunk()
@@ -789,7 +873,7 @@ class InputTypeVideo(InputType):
         self.current_frame_chunk = self.current_frame_chunk%self.total_fr_chunks
 
         # Update the current frame
-        self.current_frame = self.current_frame_chunk*self.fr_chunk_no
+        self.current_frame = self.current_frame_chunk*self.chunk_frames
 
     def prevChunk(self):
         """ Go to the previous frame chunk. """
@@ -798,14 +882,14 @@ class InputTypeVideo(InputType):
         self.current_frame_chunk = self.current_frame_chunk%self.total_fr_chunks
 
         # Update the current frame
-        self.current_frame = self.current_frame_chunk*self.fr_chunk_no
+        self.current_frame = self.current_frame_chunk*self.chunk_frames
 
     def loadChunk(self, first_frame=None, read_nframes=None):
         """ Load the frame chunk file. 
     
         Keyword arguments:
             first_frame: [int] First frame to read.
-            read_nframes: [int] Number of frames to read. If not given (None), self.fr_chunk_no frames will be
+            read_nframes: [int] Number of frames to read. If not given (None), self.chunk_frames frames will be
                 read. If -1, all frames will be read in.
         """
 
@@ -821,16 +905,18 @@ class InputTypeVideo(InputType):
 
             # Compute the first frame if it wasn't given
             if first_frame is None:
-                first_frame = self.current_frame_chunk*self.fr_chunk_no
+                first_frame = self.current_frame_chunk*self.chunk_frames
 
             # Make sure the first frame is within the limits
             first_frame = first_frame%self.total_frames
 
-        # Set the first frame location
-        self.cap.set(1, first_frame)
+        if not self.preload_video:
+            
+            # Set the first frame location
+            self.cap.set(1, first_frame)
 
         # Compute the number of frames to read
-        frames_to_read = computeFramesToRead(read_nframes, self.total_frames, self.fr_chunk_no, first_frame)
+        frames_to_read = computeFramesToRead(read_nframes, self.total_frames, self.chunk_frames, first_frame)
 
         # Get the cache ID
         cache_id = getCacheID(first_frame, frames_to_read)
@@ -848,27 +934,33 @@ class InputTypeVideo(InputType):
             print('There are no frames to read!')
             return ff_struct_fake
 
-        print('Frames to read: ' + str(frames_to_read))
+        print('Frames to read: ' + str(frames_to_read), end='')
 
         # Load the chunk of frames
         for i in range(frames_to_read):
 
-            ret, frame = self.cap.read()
+            # Read a preloaded frame
+            if self.preload_video:
+                frame = self.video_frames[first_frame + i]
 
-            # If the end of the video files was reached, stop the loop
-            if frame is None:
-                break
+            else:
+                # Read the frame
+                frame = self.loadVideoFrame()
 
-            # Convert frame to grayscale
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            # Bin the frame
-            if self.detection and (self.config.detection_binning_factor > 1):
-                frame = Image.binImage(frame, self.config.detection_binning_factor,
-                                       self.config.detection_binning_method)
+                # If the end of the video files was reached, stop the loop
+                if frame is None:
+                    break
 
             # Add frame for FF processing
             ff_struct_fake.addFrame(frame.astype(np.uint16))
+
+        
+        # Print the total number of read frames in the same line
+        print(' - loaded: {:d}'.format(ff_struct_fake.nframes), flush=True)
+
+        # If no frames have been read, return an empty structure
+        if ff_struct_fake.nframes == 0:
+            return ff_struct_fake
 
         self.current_fr_chunk_size = i + 1
 
@@ -890,7 +982,7 @@ class InputTypeVideo(InputType):
             Alternatively, the beginning of the whole file can be returned.
 
         Keyword arguments:
-            beginning: [bool] If True, the beginning time of the file will be retunred instead of the middle
+            beginning: [bool] If True, the beginning time of the file will be returned instead of the middle
                 time of the chunk.
         """
 
@@ -899,12 +991,22 @@ class InputTypeVideo(InputType):
         else:
             return str(self.currentTime(dt_obj=True))
 
-    def currentTime(self, dt_obj=False):
-        """ Return the mean time of the current image. """
+    def currentTime(self, dt_obj=False, beginning=False):
+        """ Return the mean time of the current image. 
+        
+        Keyword arguments:
+            dt_obj: [bool] If True, a datetime object will be returned instead of a tuple.
+            beginning: [bool] If True, the beginning time of the file will be returned instead of the middle
+                time of the chunk.
+        """
+
+        if beginning:
+            middle_frame = 0
+        else:
+            middle_frame = self.current_fr_chunk_size/2
 
         # Compute number of seconds since the beginning of the video file to the mean time of the frame chunk
-        seconds_since_beginning = (self.current_frame_chunk*self.fr_chunk_no
-                                   + self.current_fr_chunk_size/2)/self.fps
+        seconds_since_beginning = (self.current_frame_chunk*self.chunk_frames + middle_frame)/self.fps
 
         # Compute the absolute time
         dt = self.beginning_datetime + datetime.timedelta(seconds=seconds_since_beginning)
@@ -914,25 +1016,44 @@ class InputTypeVideo(InputType):
 
         else:
             return dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond/1000
-
-    def loadFrame(self, avepixel=False):
-        """ Load the current frame. """
-
-        # Set the frame location
-        self.cap.set(1, self.current_frame)
+        
+    def loadVideoFrame(self):
+        """ Load the next video frame in line. """
 
         # Read the frame
         ret, frame = self.cap.read()
 
+        if frame is None:
+            return None
+
         # Convert frame to grayscale
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Flip the frame if needed
+        if self.flipud:
+            frame = np.flipud(frame)
 
         # Bin the frame
         if self.detection and (self.config.detection_binning_factor > 1):
             frame = Image.binImage(frame, self.config.detection_binning_factor,
                                    self.config.detection_binning_method)
-
+            
         return frame
+
+
+    def loadFrame(self, avepixel=False):
+        """ Load the current frame. """
+
+        # If the video was preloaded, return the frame from the list
+        if self.preload_video:
+            return self.video_frames[self.current_frame]
+        
+        else:
+
+            # Set the frame location
+            self.cap.set(1, self.current_frame)
+
+            return self.loadVideoFrame()
 
     def currentFrameTime(self, frame_no=None, dt_obj=False):
         """ Return the time of the frame. """
@@ -948,10 +1069,35 @@ class InputTypeVideo(InputType):
 
         else:
             return dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond/1000
+        
+    def loadFullVideo(self):
+        """ Load the full video in memory. """
+
+        # Set the frame location
+        self.cap.set(1, 0)
+
+        video_frames = []
+
+        for i in range(self.total_frames):
+
+            print('Loading frame: {:4d}/{:4d}'.format(i, self.total_frames), end='\r', flush=True)
+
+            frame = self.loadVideoFrame()
+
+            # If the end of the video files was reached, stop the loop
+            if frame is None:
+                break
+
+            video_frames.append(frame)
+
+        # Set the frame cursor back to the frame it was before
+        self.cap.set(1, self.current_frame)
+
+        return video_frames
 
 
 class InputTypeUWOVid(InputType):
-    def __init__(self, file_path, config, detection=False):
+    def __init__(self, file_path, config, detection=False, chunk_frames=128):
         """ Input file type handle for UWO .vid files.
         
         Arguments:
@@ -961,6 +1107,7 @@ class InputTypeUWOVid(InputType):
         Keyword arguments:
             detection: [bool] Indicates that the input is used for detection. False by default. This will
                 control whether the binning is applied or not.
+            chunk_frames: [int] Number of frames to be used for averaging and maxpixels. 128 by default.
 
         """
         self.input_type = 'vid'
@@ -972,6 +1119,11 @@ class InputTypeUWOVid(InputType):
         self.config = config
 
         self.detection = detection
+
+        # Set the number of frames to be used for averaging and maxpixels
+        if chunk_frames is None:
+            chunk_frames = 128
+        self.chunk_frames = chunk_frames
 
         self.ff = None
 
@@ -1011,11 +1163,8 @@ class InputTypeUWOVid(InputType):
             self.nrows = self.nrows//self.config.detection_binning_factor
             self.ncols = self.ncols//self.config.detection_binning_factor
 
-        # Set the number of frames to be used for averaging and maxpixels
-        self.fr_chunk_no = 128
-
         # Compute the number of frame chunks
-        self.total_fr_chunks = self.total_frames//self.fr_chunk_no
+        self.total_fr_chunks = self.total_frames//self.chunk_frames
         if self.total_fr_chunks == 0:
             self.total_fr_chunks = 1
 
@@ -1039,7 +1188,7 @@ class InputTypeUWOVid(InputType):
         self.current_frame_chunk = self.current_frame_chunk%self.total_fr_chunks
 
         # Update the current frame
-        self.current_frame = self.current_frame_chunk*self.fr_chunk_no
+        self.current_frame = self.current_frame_chunk*self.chunk_frames
 
     def prevChunk(self):
         """ Go to the previous frame chunk. """
@@ -1048,14 +1197,14 @@ class InputTypeUWOVid(InputType):
         self.current_frame_chunk = self.current_frame_chunk%self.total_fr_chunks
 
         # Update the current frame
-        self.current_frame = self.current_frame_chunk*self.fr_chunk_no
+        self.current_frame = self.current_frame_chunk*self.chunk_frames
 
     def loadChunk(self, first_frame=None, read_nframes=None):
         """ Load the frame chunk file. 
     
         Keyword arguments:
             first_frame: [int] First frame to read.
-            read_nframes: [int] Number of frames to read. If not given (None), self.fr_chunk_no frames will be
+            read_nframes: [int] Number of frames to read. If not given (None), self.chunk_frames frames will be
                 read. If -1, all frames will be read in.
         """
 
@@ -1069,13 +1218,13 @@ class InputTypeUWOVid(InputType):
 
             # Compute the first frame if not given
             if first_frame is None:
-                first_frame = self.current_frame_chunk*self.fr_chunk_no
+                first_frame = self.current_frame_chunk*self.chunk_frames
 
             # Make sure the first frame is within the limits
             first_frame = first_frame%self.total_frames
 
         # Compute the number of frames to read
-        frames_to_read = computeFramesToRead(read_nframes, self.total_frames, self.fr_chunk_no, first_frame)
+        frames_to_read = computeFramesToRead(read_nframes, self.total_frames, self.chunk_frames, first_frame)
 
         # Get the cache ID
         cache_id = getCacheID(first_frame, frames_to_read)
@@ -1145,7 +1294,7 @@ class InputTypeUWOVid(InputType):
             Alternatively, the beginning of the whole file can be returned.
 
         Keyword arguments:
-            beginning: [bool] If True, the beginning time of the file will be retunred instead of the middle
+            beginning: [bool] If True, the beginning time of the file will be returned instead of the middle
                 time of the chunk.
         """
 
@@ -1154,16 +1303,33 @@ class InputTypeUWOVid(InputType):
         else:
             return str(self.currentTime(dt_obj=True))
 
-    def currentTime(self, dt_obj=False):
-        """ Return the mean time of the current image. """
+    def currentTime(self, dt_obj=False, beginning=False):
+        """ Return the mean time of the current image. 
+        
+        Keyword arguments:
+            dt_obj: [bool] If True, a datetime object will be returned instead of a tuple.
+            beginning: [bool] If True, the beginning time of the file will be returned instead of the middle
+                time of the chunk.
 
-        # Compute the mean UNIX time
-        mean_utime = np.mean(self.frame_chunk_unix_times)
+        """
 
-        mean_ts = int(mean_utime)
-        mean_tu = int((mean_utime - mean_ts)*1000000)
+        if beginning:
+            
+            beg_utime = self.frame_chunk_unix_times[0]
 
-        return unixTime2Date(mean_ts, mean_tu, dt_obj=dt_obj)
+            beg_ts = int(beg_utime)
+            beg_tu = int((beg_utime - beg_ts)*1000000)
+
+            return unixTime2Date(beg_ts, beg_tu, dt_obj=dt_obj)
+
+        else:
+            # Compute the mean UNIX time
+            mean_utime = np.mean(self.frame_chunk_unix_times)
+
+            mean_ts = int(mean_utime)
+            mean_tu = int((mean_utime - mean_ts)*1000000)
+
+            return unixTime2Date(mean_ts, mean_tu, dt_obj=dt_obj)
 
     def loadFrame(self, avepixel=False):
         """ Load the current frame. """
@@ -1245,7 +1411,8 @@ class InputTypeUWOVid(InputType):
 
     
 class InputTypeImages(object):
-    def __init__(self, dir_path, config, beginning_time=None, fps=None, detection=False):
+    def __init__(self, dir_path, config, beginning_time=None, fps=None, detection=False, flipud=False,
+                 chunk_frames=64):
         """ Input file type handle for a folder with images.
 
         Arguments:
@@ -1257,6 +1424,9 @@ class InputTypeImages(object):
                 config file.
             detection: [bool] Indicates that the input is used for detection. False by default. This will
                 control whether the binning is applied or not.
+            flipud: [bool] If True, the video frames will be flipped upside down. False by default.
+            chunk_frames: [int] Number of frames to be used for averaging and maxpixels. 64 by default.
+
         """
 
         self.input_type = 'images'
@@ -1265,6 +1435,13 @@ class InputTypeImages(object):
         self.config = config
 
         self.detection = detection
+
+        self.flipud = flipud
+
+        # Set the number of frames to be used for averaging and maxpixels
+        if chunk_frames is None:
+            chunk_frames = 64
+        self.chunk_frames = chunk_frames
 
         self.ff = None
         self.cache = {}
@@ -1275,14 +1452,14 @@ class InputTypeImages(object):
         # This type of input probably won't have any calstars files
         self.require_calstars = False
 
-        # Disctionary which holds the time of every frame, used for fast frame time lookup
+        # Dictionary which holds the time of every frame, used for fast frame time lookup
         self.frame_dt_dict = {}
 
         self.fripon_mode = False
         self.fripon_header = None
         self.cabernet_status = False
 
-        img_types = ['.png', '.jpg', '.bmp', '.fit', '.fits', '.tif']
+        img_types = ['.png', '.jpg', '.jpeg', '.bmp', '.fit', '.fits', '.tif']
 
         # Add raw formats if rawpy is installed
         if 'rawpy' in sys.modules:
@@ -1383,6 +1560,10 @@ class InputTypeImages(object):
 
         # If during the frame loading it was deterined that the images are in the FRIPON format
         if self.fripon_mode:
+
+            print()
+            print("FRIPON mode")
+            print()
 
             ### Sort the frames according to the fits header time ###
             
@@ -1497,7 +1678,7 @@ class InputTypeImages(object):
 
         if self.single_image_mode:
 
-            # Start at frame 100 to accomodate reversing picks, set the max number of frames to 1024
+            # Start at frame 100 to accommodate reversing picks, set the max number of frames to 1024
             self.current_frame = 100
             self.total_frames = 1024
 
@@ -1513,16 +1694,13 @@ class InputTypeImages(object):
         # Get the image dtype
         self.img_dtype = img.dtype
 
-        # Set the number of frames to be used for averaging and maxpixels
-        self.fr_chunk_no = 64
-
-        self.current_fr_chunk_size = self.fr_chunk_no
+        self.current_fr_chunk_size = self.chunk_frames
 
         # Compute the number of frame chunks
-        self.total_fr_chunks = self.total_frames//self.fr_chunk_no
+        self.total_fr_chunks = self.total_frames//self.chunk_frames
         if self.total_fr_chunks == 0:
             self.total_fr_chunks = 1
-            self.current_fr_chunk_size = self.fr_chunk_no = self.total_frames
+            self.current_fr_chunk_size = self.chunk_frames = self.total_frames
 
 
         # Do the initial load
@@ -1577,7 +1755,7 @@ class InputTypeImages(object):
             self.current_frame_chunk += 1
             self.current_frame_chunk = self.current_frame_chunk%self.total_fr_chunks
 
-            self.current_frame = self.current_frame_chunk*self.fr_chunk_no
+            self.current_frame = self.current_frame_chunk*self.chunk_frames
 
 
     def prevChunk(self):
@@ -1588,7 +1766,7 @@ class InputTypeImages(object):
             self.current_frame_chunk -= 1
             self.current_frame_chunk = self.current_frame_chunk%self.total_fr_chunks
 
-            self.current_frame = self.current_frame_chunk*self.fr_chunk_no
+            self.current_frame = self.current_frame_chunk*self.chunk_frames
 
 
     def loadChunk(self, first_frame=None, read_nframes=None):
@@ -1596,7 +1774,7 @@ class InputTypeImages(object):
 
         Keyword arguments:
             first_frame: [int] First frame to read.
-            read_nframes: [int] Number of frames to read. If not given (None), self.fr_chunk_no frames will be
+            read_nframes: [int] Number of frames to read. If not given (None), self.chunk_frames frames will be
                 read. If -1, all frames will be read in.
         """
 
@@ -1608,7 +1786,7 @@ class InputTypeImages(object):
 
             # Compute the first frame if it wasn't given
             if first_frame is None:
-                first_frame = self.current_frame_chunk*self.fr_chunk_no
+                first_frame = self.current_frame_chunk*self.chunk_frames
 
             # Make sure the first frame is within the limits
             first_frame = first_frame%self.total_frames
@@ -1623,7 +1801,7 @@ class InputTypeImages(object):
         else:
 
             # Compute the number of frames to read
-            frames_to_read = computeFramesToRead(read_nframes, self.total_frames, self.fr_chunk_no, \
+            frames_to_read = computeFramesToRead(read_nframes, self.total_frames, self.chunk_frames, \
                 first_frame)
 
 
@@ -1682,7 +1860,7 @@ class InputTypeImages(object):
         self.current_frame = (self.current_frame + 1)%self.total_frames
 
 
-        # In the single image mode, continously cycle through the same frame
+        # In the single image mode, continuously cycle through the same frame
         if self.single_image_mode:
             pass
         else:
@@ -1694,7 +1872,7 @@ class InputTypeImages(object):
 
         self.current_frame = (self.current_frame - 1)%self.total_frames
 
-        # In the single image mode, continously cycle through the same frame
+        # In the single image mode, continuously cycle through the same frame
         if self.single_image_mode:
             pass
         else:
@@ -1799,8 +1977,9 @@ class InputTypeImages(object):
                 # Indicate that a FRIPON fit file is read
                 self.fripon_mode = True
 
+
         # Loads a non-FRIPON FITS image
-        if current_img_file.lower().endswith('.fits'):
+        elif current_img_file.lower().endswith('.fits'):
             
             # Load the data from a fits file
             with open(os.path.join(self.dir_path, current_img_file), 'rb') as f:
@@ -1817,6 +1996,7 @@ class InputTypeImages(object):
 
             # Get the current image if it's not an NEF file (e.g. png, jpg...)
             frame = cv2.imread(os.path.join(self.dir_path, current_img_file), -1)
+
 
         
         # Convert the image to black and white if it's 8 bit and has colors
@@ -1869,6 +2049,12 @@ class InputTypeImages(object):
             if fr_no not in self.frame_dt_dict:
                 self.frame_dt_dict[fr_no] = self.dt_frame_time
 
+        
+        # Flip the image vertically if needed
+        if self.flipud:
+            frame = np.flipud(frame)
+
+
         # Bin the frame
         if self.detection and (self.config.detection_binning_factor > 1):
             frame = Image.binImage(frame, self.config.detection_binning_factor,
@@ -1888,7 +2074,7 @@ class InputTypeImages(object):
             Alternatively, the beginning of the whole file can be returned.
 
         Keyword arguments:
-            beginning: [bool] If True, the beginning time of the file will be retunred instead of the middle
+            beginning: [bool] If True, the beginning time of the file will be returned instead of the middle
                 time of the chunk.
         """
 
@@ -1898,32 +2084,51 @@ class InputTypeImages(object):
         else:
             return str(self.currentTime(dt_obj=True))
 
-    def currentTime(self, dt_obj=False):
-        """ Return the mean time of the current image. """
+    def currentTime(self, dt_obj=False, beginning=False):
+        """ Return the mean time of the current image. 
+        
+        Keyword arguments:
+            dt_obj: [bool] If True, a datetime object will be returned instead of a tuple.
+            beginning: [bool] If True, the beginning time of the file will be returned instead of the middle
+                time of the chunk.
+        """
 
         if self.uwo_png_mode or self.fripon_mode:
 
             # Convert datetimes to Unix times
             unix_times = [datetime2UnixTime(dt) for dt in self.frame_dt_list]
 
-            # Compute the mean of unix times
-            unix_mean = np.mean(unix_times)
+            if beginning:
+                    
+                # Compute the beginning unix time of the time chunk
+                unix_time = np.min(unix_times)
 
-            ts = int(unix_mean)
-            tu = (unix_mean - ts)*1000000
+            else:
+
+                # Compute the mean of unix times
+                unix_time = np.mean(unix_times)
+
+            ts = int(unix_time)
+            tu = (unix_time - ts)*1000000
 
             dt = unixTime2Date(ts, tu, dt_obj=True)
 
         else:
 
+            if beginning:
+                middle_frame = 0
+
+            else:
+                middle_frame = self.current_fr_chunk_size//2
+
             # Compute number of seconds since the beginning of the video file to the mean time of the frame chunk
-            seconds_since_beginning = (self.current_frame_chunk*self.fr_chunk_no \
-                                       + self.current_fr_chunk_size/2)/self.fps
+            seconds_since_beginning = (self.current_frame_chunk*self.chunk_frames + middle_frame)/self.fps
 
             # Compute the absolute time
             dt = self.beginning_datetime + datetime.timedelta(seconds=seconds_since_beginning)
 
         if dt_obj:
+
             return dt
 
         else:
@@ -2030,9 +2235,9 @@ class InputTypeDFN(InputType):
 
         if 'rawpy' in sys.modules:
             ### Find images in the given folder ###
-            img_types = ['.png', '.jpg', '.bmp', '.tif', '.fits', '.nef', '.cr2']
+            img_types = ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.fits', '.nef', '.cr2']
         else:
-            img_types = ['.png', '.jpg', '.bmp', '.tif', '.fits']
+            img_types = ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.fits']
 
         self.beginning_datetime = beginning_time
 
@@ -2061,7 +2266,7 @@ class InputTypeDFN(InputType):
         print('Using folder:', self.dir_path)
 
 
-        # DFN frames start at 100 to accomodate picking previous frames, and 1024 picks total are allowed
+        # DFN frames start at 100 to accommodate picking previous frames, and 1024 picks total are allowed
         self.current_frame = 100
         self.total_frames = 1024
 
@@ -2126,7 +2331,7 @@ class InputTypeDFN(InputType):
 
         Keyword arguments:
             first_frame: [int] First frame to read.
-            read_nframes: [int] Number of frames to read. If not given (None), self.fr_chunk_no frames will be
+            read_nframes: [int] Number of frames to read. If not given (None), self.chunk_frames frames will be
                 read. If -1, all frames will be read in.
         """
         return self.ff
@@ -2134,9 +2339,22 @@ class InputTypeDFN(InputType):
     def name(self, beginning=False):
         return self.image_file
 
-    def currentTime(self, dt_obj=False):
+    def currentTime(self, dt_obj=False, beginning=False):
+        """ Return the mean time of the current image.
+
+        Keyword arguments:
+            dt_obj: [bool] If True, a datetime object will be returned instead of a tuple.
+            beginning: [bool] If True, the beginning time of the file will be returned instead of the middle
+                time of the chunk.
+        """
+
+        if beginning:
+            delta_t = 0
+        else:
+            delta_t = datetime.timedelta(seconds=self.total_frames/self.fps/2)
+
         # Compute the datetime of the current frame
-        dt = self.beginning_datetime + datetime.timedelta(seconds=self.total_frames/self.fps/2)
+        dt = self.beginning_datetime + delta_t
 
         if dt_obj:
             return dt
@@ -2159,7 +2377,7 @@ class InputTypeDFN(InputType):
 
 
 def detectInputType(input_path, config, beginning_time=None, fps=None, skip_ff_dir=False, detection=False,
-    use_fr_files=False):
+    use_fr_files=False, preload_video=False, flipud=False, chunk_frames=None):
     """ Given the folder of a file, detect the input format.
 
     Arguments:
@@ -2176,6 +2394,11 @@ def detectInputType(input_path, config, beginning_time=None, fps=None, skip_ff_d
         detection: [bool] Indicates that the input is used for detection. False by default. This will
                 control whether the binning is applied or not. No effect on FF image handle.
         use_fr_files: [bool] Include FR files together with FF files. False by default, only used in SkyFit.
+        preload_video: [bool] Preload the video file. False by default. This is only used for video files.
+            Uses a lot of memory, so only use for small videos.
+        flipud: [bool] Flip the image vertically. False by default.
+        chunk_frames: [int] Number of frames to read in a chunk. None by default, in which case the defaults
+            will be used specified for each input type.
 
     """
     
@@ -2183,19 +2406,21 @@ def detectInputType(input_path, config, beginning_time=None, fps=None, skip_ff_d
     if os.path.isdir(input_path):
 
         # Detect input type if a directory is given
-        img_handle = detectInputTypeFolder(input_path, config, beginning_time=beginning_time, fps=fps, \
-            skip_ff_dir=skip_ff_dir, detection=detection, use_fr_files=use_fr_files)
+        img_handle = detectInputTypeFolder(input_path, config, beginning_time=beginning_time, fps=fps,
+            skip_ff_dir=skip_ff_dir, detection=detection, use_fr_files=use_fr_files, flipud=flipud,
+            chunk_frames=chunk_frames)
         
     else:
         # Detect input type if a path to a file is given
-        img_handle = detectInputTypeFile(input_path, config, beginning_time=beginning_time, fps=fps, \
-            detection=fps)
+        img_handle = detectInputTypeFile(input_path, config, beginning_time=beginning_time, fps=fps,
+            detection=detection, preload_video=preload_video, flipud=flipud,
+            chunk_frames=chunk_frames)
 
     return img_handle
 
 
 def detectInputTypeFolder(input_dir, config, beginning_time=None, fps=None, skip_ff_dir=False, \
-    detection=False, use_fr_files=False):
+    detection=False, use_fr_files=False, flipud=False, chunk_frames=None):
     """ Given the folder of a file, detect the input format.
 
     Arguments:
@@ -2212,11 +2437,14 @@ def detectInputTypeFolder(input_dir, config, beginning_time=None, fps=None, skip
         detection: [bool] Indicates that the input is used for detection. False by default. This will
                 control whether the binning is applied or not. No effect on FF image handle.
         use_fr_files: [bool] Include FR files together with FF files. False by default, only used in SkyFit.
+        flipud: [bool] Flip the image vertically. False by default.
+        chunk_frames: [int] Number of frames to read in a chunk. None by default, in which case the defaults
+            will be used specified for each input type.
 
     """
 
     ### Find images in the given folder ###
-    img_types = ['.png', '.jpg', '.bmp', '.fit', '.tif', '.fits']
+    img_types = ['.png', '.jpg', '.jpeg', '.bmp', '.fit', '.tif', '.fits']
 
     if 'rawpy' in sys.modules:
         img_types += ['.nef', '.cr2']
@@ -2254,13 +2482,33 @@ def detectInputTypeFolder(input_dir, config, beginning_time=None, fps=None, skip
     elif any([any(file.lower().endswith(x) for x in img_types) for file in os.listdir(input_dir)]) and \
             config.width != 4912 and config.width != 7360:
         img_handle = InputTypeImages(input_dir, config, beginning_time=beginning_time, fps=fps,
-                                     detection=detection)
+                                     detection=detection, flipud=flipud, chunk_frames=chunk_frames)
 
     return img_handle
 
 
+def checkIfVideoFile(file_name):
+    """ Check if the given file is a supported video file format. 
 
-def detectInputTypeFile(input_file, config, beginning_time=None, fps=None, detection=False):
+    Arguments:
+        file_name: [str] File name to check.
+
+    Return:
+        [bool] True if the file is a video file, False otherwise.
+
+    """
+
+    if file_name.lower().endswith('.mp4') or file_name.lower().endswith('.avi') \
+        or file_name.lower().endswith('.mkv') or file_name.lower().endswith('.wmv') \
+        or file_name.lower().endswith('.mov'):
+
+        return True
+    
+    return False
+
+
+def detectInputTypeFile(input_file, config, beginning_time=None, fps=None, detection=False, 
+                        preload_video=False, flipud=False, chunk_frames=None):
     """ Given a file, detect the input format.
 
     Arguments:
@@ -2274,6 +2522,10 @@ def detectInputTypeFile(input_file, config, beginning_time=None, fps=None, detec
             the config file.
         detection: [bool] Indicates that the input is used for detection. False by default. This will
                 control whether the binning is applied or not. No effect on FF image handle.
+        preload_video: [bool] Preload the video file. False by default. This is only used for video files.
+        flipud: [bool] Flip the image vertically. False by default.
+        chunk_frames: [int] Number of frames to read in a chunk. None by default, in which case the defaults
+            will be used specified for each input type.
 
     """
 
@@ -2289,19 +2541,19 @@ def detectInputTypeFile(input_file, config, beginning_time=None, fps=None, detec
         img_handle.nrows = config.height
 
     # Check if the given file is a video file
-    elif file_name.lower().endswith('.mp4') or file_name.lower().endswith('.avi') \
-            or file_name.lower().endswith('.mkv') or file_name.lower().endswith('.wmv') \
-            or file_name.lower().endswith('.mov'):
+    elif checkIfVideoFile(file_name):
 
         # Init the image hadle for video files
         img_handle = InputTypeVideo(input_file, config, beginning_time=beginning_time,
-                                    detection=detection)
+                                    detection=detection, preload_video=preload_video, flipud=flipud,
+                                    chunk_frames=chunk_frames)
 
     # Check if the given files is the UWO .vid format
     elif file_name.endswith('.vid'):
 
         # Init the image handle for UWO-type .vid files
-        img_handle = InputTypeUWOVid(input_file, config, detection=detection)
+        img_handle = InputTypeUWOVid(input_file, config, detection=detection, flipud=flipud, 
+                                     chunk_frames=chunk_frames)
 
     elif config.width == 4912 or config.width == 7360:
         img_handle = InputTypeDFN(input_file, config, beginning_time=beginning_time, fps=fps)

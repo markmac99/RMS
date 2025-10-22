@@ -2,13 +2,13 @@
 
 import numpy as np
 
-
+from RMS.Routines.SphericalPolygonCheck import sphericalPolygonCheck
 
 def lineFunc(x, m, k):
     """ Linear function.
     
     Arguments:
-        x: [float or ndarray] Independant variable.
+        x: [float or ndarray] Independent variable.
         m: [float] Slope.
         k: [float] Y-intercept.
 
@@ -23,7 +23,7 @@ def logLineFunc(x, m, k):
     """ Logarithmic linear function.
 
     Arguments:
-        x: [float or ndarray] Independant variable.
+        x: [float or ndarray] Independent variable.
         m: [float] Slope.
         k: [float] Y-intercept.
 
@@ -35,7 +35,7 @@ def logLineFunc(x, m, k):
 
 
 def angularSeparation(ra1, dec1, ra2, dec2):
-    """ Calculates the angle between two points on a sphere. 
+    """ Calculates the angle between two points on a sphere. Inputs in radians.
     
     Arguments:
         ra1: [float] Right ascension 1 (radians).
@@ -59,6 +59,25 @@ def angularSeparation(ra1, dec1, ra2, dec2):
     # dis = 2.0*np.arcsin(sindis) 
 
     # return dis
+
+def angularSeparationDeg(ra1, dec1, ra2, dec2):
+    """ Calculates the angle between two points on a sphere in degrees.
+
+    Arguments:
+        ra1: [float] Right ascension 1 (degrees).
+        dec1: [float] Declination 1 (degrees).
+        ra2: [float] Right ascension 2 (degress).
+        dec2: [float] Declination 2 (degrees).
+
+    Return:
+        [float] Angle between two coordinates (degrees).
+    """
+
+    ra1_rad, dec1_rad = np.radians(ra1), np.radians(dec1)
+    ra2_rad, dec2_rad = np.radians(ra2), np.radians(dec2)
+
+
+    return np.degrees(angularSeparation(ra1_rad, dec1_rad, ra2_rad, dec2_rad))
 
 
 def angularSeparationVect(vect1, vect2):
@@ -142,7 +161,7 @@ def polarToCartesian(theta, phi):
         phi: [float] Latitude in radians.
 
     Return:
-        (x, y, z): [tuple of floats] Coordinates of the point in 3D cartiesian coordinates.
+        (x, y, z): [tuple of floats] Coordinates of the point in 3D cartesian coordinates.
     """
 
 
@@ -245,7 +264,7 @@ def sphericalToCartesian(r, theta, phi):
         phi: [float] Azimuth angle in radians.
 
     Return:
-        (x, y, z): [tuple of floats] Coordinates of the point in 3D cartiesian coordinates.
+        (x, y, z): [tuple of floats] Coordinates of the point in 3D cartesian coordinates.
     """
 
     x = r*np.sin(theta)*np.cos(phi)
@@ -257,29 +276,24 @@ def sphericalToCartesian(r, theta, phi):
 
 def pointInsideConvexPolygonSphere(points, vertices):
     """
+    LEGACY FUNCTION.
+
     Polygon must be convex
     https://math.stackexchange.com/questions/4012834/checking-that-a-point-is-in-a-spherical-polygon
 
 
     Arguments:
-        points: [array] points with dimension (npoints, 2). The two dimensions are ra and dec
-        vertices: [array] vertices of convex polygon with dimension (nvertices, 2)
+        points: [array] Points with dimension (npoints, 2). The two dimensions are ra and dec in degrees.
+        vertices: [array] Vertices of convex polygon with dimension (nvertices, 2). The two dimensions are 
+            ra and dec in degrees.
         
     Return:
         filter: [array of bool] Array of booleans on whether a given point is inside the polygon on 
             the sphere.
     """
-    # convert ra dec to spherical
-    points = points[:, ::-1]
-    vertices = vertices[:, ::-1]
-    points[:, 0] = 90 - points[:, 0]
-    vertices[:, 0] = 90 - vertices[:, 0]
-    points = np.array(sphericalToCartesian(*np.hstack((np.ones((len(points), 1)), np.radians(points))).T))
-    vertices = np.array(sphericalToCartesian(*np.hstack((np.ones((len(vertices), 1)), np.radians(vertices))).T))
-    
-    great_circle_normal = np.cross(vertices, np.roll(vertices, 1, axis=1), axis=0)
-    dot_prod = np.dot(great_circle_normal.T, points)
-    return np.sum(dot_prod < 0, axis=0, dtype=int) == 0  # inside if n . p < 0 for no n
+
+    # Call the new function to check if the points are inside the polygon
+    return sphericalPolygonCheck(vertices, points)
 
 
 ##############################################################################################################
@@ -314,6 +328,50 @@ def histogramEdgesDataNumber(x, points_per_bin):
 
 #########
 
+
+def twoDGaussian(params, amplitude, xo, yo, sigma_x, sigma_y, theta, offset):
+    """ Defines a 2D Gaussian distribution. 
+    
+    Arguments:
+        params: [tuple of floats] 
+            - (x, y) independent variables, 
+            - saturation: [int] Value at which saturation occurs
+        amplitude: [float] amplitude of the PSF
+        xo: [float] PSF center, X component
+        yo: [float] PSF center, Y component
+        sigma_x: [float] standard deviation X component
+        sigma_y: [float] standard deviation Y component
+        theta: [float] PSF rotation in radians
+        offset: [float] PSF offset from the 0 (i.e. the "elevation" of the PSF)
+
+    Return:
+        g: [ndarray] values of the given Gaussian at (x, y) coordinates
+
+    """
+
+    x, y, saturation = params
+
+    if isinstance(saturation, np.ndarray):
+        saturation = saturation[0, 0]
+    
+    xo = float(xo)
+    yo = float(yo)
+    amplitude = abs(amplitude)
+    sigma_x = abs(sigma_x)
+    sigma_y = abs(sigma_y)
+
+    a = (np.cos(theta)**2)/(2*sigma_x**2) + (np.sin(theta)**2)/(2*sigma_y**2)
+    b = -(np.sin(2*theta))/(4*sigma_x**2) + (np.sin(2*theta))/(4*sigma_y**2)
+    c = (np.sin(theta)**2)/(2*sigma_x**2) + (np.cos(theta)**2)/(2*sigma_y**2)
+    g = offset + amplitude*np.exp(-(a*((x - xo)**2) + 2*b*(x - xo)*(y - yo) + c*((y - yo)**2)))
+
+    # Limit values to saturation level
+    g[g > saturation] = saturation
+
+    return g.ravel()
+
+
+
 def rollingAverage2d(x, y, x_window):
     """
     Rolling average where the window is on the x axis rather than index
@@ -341,3 +399,225 @@ def rollingAverage2d(x, y, x_window):
                 break
 
     return output_x, output_y
+
+
+
+def weightedMedian(coordinates, weights):
+    """ Compute the weighted median of the given coordinates.
+
+    Arguments:
+        coordinates: [list] List of numeric values.
+        weights: [list] List of corresponding weights.
+
+    Returns:
+        [float] Weighted median of the coordinates.
+    """
+
+    # Combine coordinates and weights, and sort by coordinate value.
+    sorted_pairs = sorted(zip(coordinates, weights), key=lambda x: x[0])
+    total_weight = sum(weights)
+    cumulative_weight = 0
+
+    for coord, w in sorted_pairs:
+
+        cumulative_weight += w
+
+        if cumulative_weight >= total_weight/2:
+
+            return coord
+        
+    # Fallback: return the last coordinate if the cumulative threshold is not reached
+    return sorted_pairs[-1][0]
+
+
+def dimHypot(t1, t2):
+    """ 
+    Compute the cartesian difference between vectors in an arbitrary number of dimensions
+
+    Arguments:
+        t1: [tuple] of a vector
+        t2: [tuple] of a vector
+
+    Returns:
+        [float] Euclidean difference between vectors or scalars
+
+    """
+
+    t1 = (t1, 0) if type(t1) == int else t1
+    t2 = (t2, 0) if type(t2) == int else t2
+
+    if len(t1) != len(t2):
+        raise ValueError("Unable to compute cartesian difference between vectors with different dimensions")
+        return None
+
+    a = 0
+    for c1, c2 in zip(t1, t2):
+        a += (c1 - c2) ** 2
+
+    return np.sqrt(a)
+
+
+
+##############################################################################################################
+# TESTS
+# (work in progress)
+##############################################################################################################
+
+def testDimHypot():
+
+
+    test_list = [[1, 2,
+                                        1.0],
+                 [(1, 1), (4, 5),
+                                            5],
+                 [(1, 2, 3, 4), (5, 6, 7, 8),
+                                            8],
+                 [(-1, -2, -3, -4), (-5, -6, -7, -8),
+                                            8],
+                 [(-1, -2, -3), (-5, -6, -7, -8),
+                    "ValueError('Unable to compute cartesian difference between vectors with different dimensions')"]]
+
+    for t1, t2, res in test_list:
+        try:
+            test_res = dimHypot(t1, t2)
+        except Exception as e:
+            test_res = repr(e)
+        if test_res != res:
+            print("Test failure: t1:{}, t2:{}, did not give {}, returned {}"
+                                                    .format(t1, t2, res, test_res))
+
+
+            return False
+
+    return True
+
+def testAngSeparationDeg():
+
+
+    test_list =     [[[45, 45], [45, 45], 0 ],
+                     [[0,  90], [0,   0], 90],
+                     [[45, 45], [0,   0], 60],
+                     [[30, -30], [-30, 30], 82.8192]]
+
+    for a1, a2, res in test_list:
+        if round(angularSeparationDeg(a1[0], a1[1], a2[0], a2[1]), 4) != round(res,4):
+            print("Test failure: ra1:{}, dec1:{}, ra2:{}, dec2:{} did not give {}, returned {}"
+                            .format(a1[0], a1[1], a2[0], a2[1], res, angularSeparationDeg(a1[0], a1[1], a2[0], a2[1])))
+            return False
+
+    return True
+
+
+def testPointInsideConvexPolygonSphere():
+
+    # # Create a polygon in the sky (has to be convex)
+    # perimiter_polygon = [
+    #     # RA, Dec
+    #     [ 46.00, 79.00],
+    #     [136.00, 84.00],
+    #     [216.55, 75.82],
+    #     [245.85, 61.53],
+    #     [319.86, 56.92],
+    #     [336.00, 70.64],
+    #     [0.00, 77.71],
+    #     ]
+
+    perimiter_polygon = [
+    (0.55, 36.68),
+    (347.46, 43.15),
+    (331.99, 45.77),
+    (315.97, 44.23),
+    (301.11, 38.12),
+    (283.91, 59.51),
+    (239.95, 68.72),
+    (195.93, 59.46),
+    (178.34, 38.02),
+    (163.94, 43.93),
+    (148.00, 45.49),
+    (132.59, 42.86),
+    (119.58, 36.30),
+    (99.46, 56.19),
+    (60.00, 64.18),
+    (20.60, 56.25),
+    (0.55, 36.68),
+]
+    
+    perimiter_polygon = np.array(perimiter_polygon)
+
+    # test_points = [
+    #     # RA, Dec
+    #     [47.11, 83.83], # Inside
+    #     [50.23, 74.42], # Outside
+    #     [255.01, 77.33], # Inside
+    #     [185.01, 69.45], # Outside
+    #     [316.75, 64.33] # Outside
+    # ]
+
+    # test_points = np.array(test_points)
+
+    # Sample test points between 0 and 360 degrees in RA and 0 - 90 Declination
+    ra_samples = np.linspace(0, 360, 40)
+    dec_samples = np.linspace(np.min(perimiter_polygon[:, 1]), 90, 20)
+    test_points = np.array(np.meshgrid(ra_samples, dec_samples)).T.reshape(-1, 2)
+
+
+    # Sort the vertices by RA
+    #perimiter_polygon = perimiter_polygon[np.argsort(perimiter_polygon[:, 0])][::-1]
+
+    # # Sort the perimiter by Dec
+    # perimiter_polygon = perimiter_polygon[np.argsort(perimiter_polygon[:, 1])]
+
+
+    # Compute the points that are inside the polygon
+    inside = pointInsideConvexPolygonSphere(test_points, perimiter_polygon)
+
+    # Make the plot in polar coordiantes
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, polar=True)
+
+    # Plot the test points
+    test_points = np.array(test_points)
+    ax.scatter(np.radians(test_points[:, 0]), np.radians(90 - test_points[:, 1]), c='k')
+
+    # Mark the points inside the polygon with an empry green circle
+    ax.scatter(np.radians(test_points[inside, 0]), np.radians(90 - test_points[inside, 1]), edgecolors='g', facecolors='none', s=100, label='Inside')
+
+    # Add the first point to close the polygon
+    ra_dec = np.vstack((perimiter_polygon, perimiter_polygon[0]))
+
+    # Plot the perimeter of the polygon as a continours curve
+    plt.plot(np.radians(ra_dec[:, 0]), np.radians(90 - ra_dec[:, 1]), 'k-')
+
+    # Mark the vertices of the polygon with numbers
+    for i in range(len(perimiter_polygon)):
+        ax.text(np.radians(perimiter_polygon[i, 0]), np.radians(90 - perimiter_polygon[i, 1]), str(i), fontsize=12)
+
+    plt.legend()
+    
+
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+
+    plt.show()
+
+
+def tests():
+
+    function_to_test = [["dimHypot", testDimHypot()],
+                         ["angSeparationDeg", testAngSeparationDeg()],
+                         ["pointInsideConvexPolygonSphere", testPointInsideConvexPolygonSphere()]]
+
+    for func_name, func in function_to_test:
+        if func:
+            print("Test of {} successful".format(func_name))
+        else:
+            print("Test failed")
+
+
+
+if __name__ == "__main__":
+
+    # Run the tests
+    tests()

@@ -6,11 +6,11 @@ from __future__ import absolute_import, division, print_function
 
 import argparse
 import copy
+import datetime
 import os
 import random
 import shutil
 import sys
-import logging
 
 import matplotlib.pyplot as plt # 
 import numpy as np
@@ -24,14 +24,14 @@ from RMS.Astrometry.Conversions import date2JD, jd2Date, raDec2AltAz
 from RMS.Astrometry.FFTalign import alignPlatepar
 from RMS.Formats import CALSTARS, FFfile, Platepar, StarCatalog
 from RMS.Math import angularSeparation
-from RMS.Logger import initLogging
+from RMS.Logger import initLogging, getLogger
 
 pyximport.install(setup_args={'include_dirs':[np.get_include()]})
 from RMS.Astrometry.CyFunctions import matchStars, subsetCatalog
 
 
 # Get the logger from the main module
-log = logging.getLogger("logger")
+log = getLogger("logger")
 
 
 def computeMinimizationTolerances(config, platepar, star_dict_len):
@@ -92,7 +92,7 @@ def matchStarsResiduals(config, platepar, catalog_stars, star_dict, match_radius
 
         # Estimate RA,dec of the centre of the FOV
         _, RA_c, dec_c, _ = xyToRaDecPP([jd2Date(jd)], [platepar.X_res/2], [platepar.Y_res/2], [1], \
-            platepar, extinction_correction=False)
+            platepar, extinction_correction=False, precompute_pointing_corr=True)
 
         RA_c = RA_c[0]
         dec_c = dec_c[0]
@@ -216,7 +216,7 @@ def matchStarsResiduals(config, platepar, catalog_stars, star_dict, match_radius
 
                 # Convert image coordinates to RA/Dec
                 _, star_ra, star_dec, _ = xyToRaDecPP([jd2Date(jd)], [star_x], [star_y], [1], \
-                    platepar, extinction_correction=False)
+                    platepar, extinction_correction=False, precompute_pointing_corr=True)
 
                 # Compute angular distance between the predicted and the catalog position
                 ang_dist = np.degrees(angularSeparation(np.radians(cat_ra), np.radians(cat_dec), \
@@ -383,10 +383,12 @@ def _calcImageResidualsAstro(params, config, platepar, catalog_stars, star_dict,
 
 
 
-def starListToDict(config, calstars_list, max_ffs=None):
+def starListToDict(config, calstars_data, max_ffs=None):
     """ Converts the list of calstars into dictionary where the keys are FF file JD and the values is
         a list of (X, Y, bg_intens, intens) of stars.
     """
+
+    calstars_list, ff_frames = calstars_data
 
     # Convert the list to a dictionary
     calstars = {ff_file: star_data for ff_file, star_data in calstars_list}
@@ -403,7 +405,7 @@ def starListToDict(config, calstars_list, max_ffs=None):
         if len(stars_list) >= config.ff_min_stars:
 
             # Calculate the JD time of the FF file
-            dt = FFfile.getMiddleTimeFF(ff_name, config.fps, ret_milliseconds=True)
+            dt = FFfile.getMiddleTimeFF(ff_name, config.fps, ret_milliseconds=True, ff_frames=ff_frames)
             jd = date2JD(*dt)
 
             # Add the time and the stars to the dict
@@ -425,13 +427,14 @@ def starListToDict(config, calstars_list, max_ffs=None):
 
 
 
-def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
+def autoCheckFit(config, platepar, calstars_data, _fft_refinement=False):
     """ Attempts to refine the astrometry fit with the given stars and and initial astrometry parameters.
     Arguments:
         config: [Config structure]
         platepar: [Platepar structure] Initial astrometry parameters.
-        calstars_list: [list] A list containing stars extracted from FF files. See RMS.Formats.CALSTARS for
-            more details.
+        calstars_list: [tuple] (list, int) 
+        - A list containing stars extracted from FF files.
+        - An integer representing the number of frames in an FF file.
     Keyword arguments:
         _fft_refinement: [bool] Internal flag indicating that autoCF is running the second time recursively
             after FFT platepar adjustment.
@@ -439,11 +442,11 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
     Return:
         (platepar, fit_status):
             platepar: [Platepar structure] Estimated/refined platepar.
-            fit_status: [bool] True if fit was successfuly, False if not.
+            fit_status: [bool] True if fit was successful, False if not.
     """
 
 
-    def _handleFailure(config, platepar, calstars_list, catalog_stars, _fft_refinement):
+    def _handleFailure(config, platepar, calstars_data, catalog_stars, _fft_refinement):
         """ Run FFT alignment before giving up on ACF. """
 
         if not _fft_refinement:
@@ -452,6 +455,8 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
             log.info("-------------------------------------------------------------------------------")
             log.info('The initial platepar is bad, trying to refine it using FFT phase correlation...')
             log.info("")
+
+            calstars_list, ff_frames = calstars_data
 
             # Prepare data for FFT image registration
 
@@ -465,7 +470,8 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
             calstars_coords[:, [0, 1]] = calstars_coords[:, [1, 0]]
 
             # Get the time of the FF file
-            calstars_time = FFfile.getMiddleTimeFF(max_len_ff, config.fps, ret_milliseconds=True)
+            calstars_time = FFfile.getMiddleTimeFF(max_len_ff, config.fps, ret_milliseconds=True, 
+                                                   ff_frames=ff_frames)
 
 
             # Try aligning the platepar using FFT image registration
@@ -476,7 +482,7 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
             min_radius = 10
 
             # Prepare star dictionary to check the match
-            dt = FFfile.getMiddleTimeFF(max_len_ff, config.fps, ret_milliseconds=True)
+            dt = FFfile.getMiddleTimeFF(max_len_ff, config.fps, ret_milliseconds=True, ff_frames=ff_frames)
             jd = date2JD(*dt)
             star_dict_temp = {}
             star_dict_temp[jd] = calstars_dict[max_len_ff]
@@ -498,7 +504,7 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
 
 
             # Redo autoCF
-            return autoCheckFit(config, platepar_refined, calstars_list, _fft_refinement=True)
+            return autoCheckFit(config, platepar_refined, calstars_data, _fft_refinement=True)
 
         else:
             log.info('Auto Check Fit failed completely, please redo the plate manually!')
@@ -508,15 +514,41 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
     if _fft_refinement:
         log.info('Second ACF run with an updated platepar via FFT phase correlation...')
 
+    # Extract the star data and the number of frames in the FF files
+    calstars_list, ff_frames = calstars_data
 
-    # Load catalog stars (overwrite the mag band ratios if specific catalog is used)
-    catalog_stars, _, config.star_catalog_band_ratios = StarCatalog.readStarCatalog(config.star_catalog_path, \
-        config.star_catalog_file, lim_mag=config.catalog_mag_limit, \
-        mag_band_ratios=config.star_catalog_band_ratios)
-
+    # Make sure we actually have at least one CALSTARS entry, otherwise bail out early
+    if not calstars_list:
+        log.warning("autoCheckFit: CALSTARS list is empty - skipping automatic check-fit")
+        return platepar, False
 
     # Dictionary which will contain the JD, and a list of (X, Y, bg_intens, intens) of the stars
-    star_dict = starListToDict(config, calstars_list, max_ffs=config.calstars_files_N)
+    star_dict = starListToDict(config, calstars_data, max_ffs=config.calstars_files_N)
+
+    ts = FFfile.getMiddleTimeFF(calstars_list[0][0], fps=config.fps, ret_milliseconds=True, dt_obj=True)
+
+    J2000 = datetime.datetime(2000, 1, 1, 12, 0, 0)
+
+    # Compute the number of years from J2000
+    years_from_J2000 = (ts - J2000).total_seconds()/(365.25*24*3600)
+    log.info('Loading star catalog with years from J2000: {:.2f}'.format(years_from_J2000))
+
+    # Load catalog stars (overwrite the mag band ratios if specific catalog is used)
+    star_catalog_status = StarCatalog.readStarCatalog(
+        config.star_catalog_path,
+        config.star_catalog_file,
+        years_from_J2000=years_from_J2000,
+        lim_mag=config.catalog_mag_limit,
+        mag_band_ratios=config.star_catalog_band_ratios
+    )
+
+    if not star_catalog_status:
+        log.info("Could not load the star catalog!")
+        log.info(os.path.join(config.star_catalog_path, config.star_catalog_file))
+        return platepar, False
+
+    catalog_stars, _, config.star_catalog_band_ratios = star_catalog_status
+
 
     # There has to be a minimum of 200 FF files for star fitting
     if len(star_dict) < config.calstars_files_N:
@@ -543,7 +575,7 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
     fatol, xatol_ang = computeMinimizationTolerances(config, platepar, len(star_dict))
 
 
-    ### If the initial match is good enough, do only quick recalibratoin ###
+    ### If the initial match is good enough, do only quick recalibration ###
 
     # Match the stars and calculate the residuals
     n_matched, avg_dist, cost, _ = matchStarsResiduals(config, platepar, catalog_stars, star_dict, \
@@ -554,7 +586,7 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
         # Check if the average distance with the tightest radius is close
         if avg_dist < config.dist_check_quick_threshold:
 
-            log.info("Using quick fit with smaller radiia...")
+            log.info("Using quick fit with smaller radii...")
 
             # Use a reduced set of initial radius values
             radius_list = [1.5, min_radius]
@@ -562,7 +594,7 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
     ##########
 
 
-    # Match increasingly smaller search radiia around image stars
+    # Match increasingly smaller search radii around image stars
     for i, match_radius in enumerate(radius_list):
 
         # Match the stars and calculate the residuals
@@ -577,13 +609,13 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
         log.info("    Average deviation = {:>6.2f} px".format(avg_dist))
 
 
-        # The initial number of matched stars has to be at least the number of FF imaages, otherwise it means
+        # The initial number of matched stars has to be at least the number of FF images, otherwise it means
         #   that the initial platepar is no good
         if n_matched < config.calstars_files_N:
             log.info("The total number of initially matched stars is too small! Please manually redo the plate or make sure there are enough calibration stars.")
 
             # Try to refine the platepar with FFT phase correlation and redo the ACF
-            return _handleFailure(config, platepar, calstars_list, catalog_stars, _fft_refinement)
+            return _handleFailure(config, platepar, calstars_data, catalog_stars, _fft_refinement)
 
 
         # Check if the platepar is good enough and do not estimate further parameters
@@ -610,7 +642,7 @@ def autoCheckFit(config, platepar, calstars_list, _fft_refinement=False):
         if not res.success:
 
             # Try to refine the platepar with FFT phase correlation and redo the ACF
-            return _handleFailure(config, platepar, calstars_list, catalog_stars, _fft_refinement)
+            return _handleFailure(config, platepar, calstars_data, catalog_stars, _fft_refinement)
 
 
         else:
@@ -687,11 +719,10 @@ if __name__ == "__main__":
     config = cr.loadConfigFromDirectory(cml_args.config, dir_path)
 
     # Initialize the logger
-    initLogging(config, 'checkfit_')
+    initLogging(config, 'checkfit_', safedir=dir_path)
 
     # Get the logger handle
-    log = logging.getLogger("logger")
-    log.setLevel(logging.INFO)
+    log = getLogger("logger", level="INFO")
 
     # Get a list of files in the night folder
     file_list = os.listdir(dir_path)
@@ -721,7 +752,7 @@ if __name__ == "__main__":
         sys.exit()
 
     # Load the calstars file
-    calstars_list = CALSTARS.readCALSTARS(dir_path, calstars_file)
+    calstars_data = CALSTARS.readCALSTARS(dir_path, calstars_file)
 
     log.info('CALSTARS file: ' + calstars_file + ' loaded!')
 
@@ -729,13 +760,13 @@ if __name__ == "__main__":
 
 
     # Run the automatic astrometry fit
-    pp, fit_status = autoCheckFit(config, platepar, calstars_list)
+    pp, fit_status = autoCheckFit(config, platepar, calstars_data)
 
 
-    # If the fit suceeded, save the platepar
+    # If the fit succeeded, save the platepar
     if fit_status:
 
-        log.info('ACF sucessful!')
+        log.info('ACF successful!')
 
         # Save the old platepar
         shutil.move(os.path.join(dir_path, config.platepar_name), os.path.join(dir_path, 

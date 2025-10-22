@@ -16,11 +16,12 @@
 
 
 import os
+import sys
+import traceback
 import time
-import logging
+import datetime
 import multiprocessing
 from math import floor
-
 import numpy as np
 import cv2
 
@@ -28,6 +29,8 @@ import cv2
 from RMS.VideoExtraction import Extractor
 from RMS.Formats import FFfile, FFStruct
 from RMS.Formats import FieldIntensities
+from RMS.Logger import getLogger
+from RMS.Misc import UTCFromTimestamp
 from RMS.Routines.Image import saveImage
 
 # Import Cython functions
@@ -37,7 +40,7 @@ from RMS.CompressionCy import compressFrames
 
 
 # Get the logger from the main module
-log = logging.getLogger("logger")
+log = getLogger("logger")
 
 
 class Compressor(multiprocessing.Process):
@@ -50,14 +53,14 @@ class Compressor(multiprocessing.Process):
 
     running = False
     
-    def __init__(self, data_dir, array1, startTime1, array2, startTime2, config, detector=None):
+    def __init__(self, data_dir, array1, start_time1, array2, start_time2, config, detector=None):
         """
 
         Arguments:
             array1: first numpy array in shared memory of grayscale video frames
-            startTime1: float in shared memory that holds time of first frame in array1
+            start_time1: float in shared memory that holds time of first frame in array1
             array2: second numpy array in shared memory
-            startTime1: float in shared memory that holds time of first frame in array2
+            start_time2: float in shared memory that holds time of first frame in array2
             config: configuration class
 
         Keyword arguments:
@@ -70,9 +73,9 @@ class Compressor(multiprocessing.Process):
         
         self.data_dir = data_dir
         self.array1 = array1
-        self.startTime1 = startTime1
+        self.start_time1 = start_time1
         self.array2 = array2
-        self.startTime2 = startTime2
+        self.start_time2 = start_time2
         self.config = config
 
         self.detector = detector
@@ -137,7 +140,16 @@ class Compressor(multiprocessing.Process):
         ff.first = N + 256
         ff.camno = self.config.stationID
         ff.fps = self.config.fps
-        ff.starttime = date_string + "_" + str(micros).zfill(6)
+
+        if sys.version_info[0] == 2:
+            # Python 2 code
+            dt = UTCFromTimestamp.utcfromtimestamp(startTime)
+            ff.starttime = dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+        else:
+            # Python 3 code
+            dt = UTCFromTimestamp.utcfromtimestamp(startTime)
+            ff.starttime = dt.isoformat(timespec='microseconds')
         
         # Write the FF file
         FFfile.write(ff, self.data_dir, filename_millis, fmt=self.config.ff_format)
@@ -197,11 +209,19 @@ class Compressor(multiprocessing.Process):
                 log.debug('Waited more than 60 seconds for compression to end, killing it...')
                 break
 
-
         log.debug('Compression joined!')
 
         self.terminate()
         self.join()
+
+        # Free shared memory after the compressor is done
+        try:
+            log.debug('Freeing frame buffers in Compressor...')
+            del self.array1
+            del self.array2
+        except Exception as e:
+            log.debug('Freeing frame buffers failed with error:' + repr(e))
+            log.debug(repr(traceback.format_exception(*sys.exc_info())))
 
         # Return the detector and live viewer objects because they were updated in this namespace
         return self.detector
@@ -226,7 +246,7 @@ class Compressor(multiprocessing.Process):
         while not self.exit.is_set():
 
             # Block until frames are available
-            while (self.startTime1.value == 0) and (self.startTime2.value == 0):
+            while (self.start_time1.value == 0) and (self.start_time2.value == 0):
 
                 # Exit function if process was stopped from the outside
                 if self.exit.is_set():
@@ -244,28 +264,28 @@ class Compressor(multiprocessing.Process):
 
             
             buffer_one = True
-            if self.startTime1.value > 0:
+            if self.start_time1.value > 0:
 
                 # Retrieve time of first frame
-                startTime = float(self.startTime1.value)
+                startTime = float(self.start_time1.value)
 
                 # Copy frames
                 frames = self.array1
 
                 # Tell the capture thread to wait until the compression is completed by setting this to -1
-                self.startTime1.value = -1
+                self.start_time1.value = -1
                 buffer_one = True
 
-            elif self.startTime2.value > 0:
+            elif self.start_time2.value > 0:
 
                 # Retrieve time of first frame
-                startTime = float(self.startTime2.value)
+                startTime = float(self.start_time2.value)
 
                 # Copy frames
                 frames = self.array2
 
                 # Tell the capture thread to wait until the compression is completed
-                self.startTime2.value = -1
+                self.start_time2.value = -1
                 buffer_one = False
 
             else:
@@ -288,10 +308,10 @@ class Compressor(multiprocessing.Process):
             
             # Once the compression is done, tell the capture thread to keep filling the buffer
             if buffer_one:
-                self.startTime1.value = 0
+                self.start_time1.value = 0
 
             else:
-                self.startTime2.value = 0
+                self.start_time2.value = 0
 
 
             # Cut out the compressed frames to the proper size

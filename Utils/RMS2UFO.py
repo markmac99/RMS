@@ -59,14 +59,14 @@ def FTPdetectinfo2UFOOrbitInput(dir_path, file_name, platepar_path, platepar_dic
                 pp = platepar_dict[ff_name]
 
             else:
-                print('Skipping {:s} becuase no platepar was found for this FF file!'.format(ff_name))
+                print('Skipping {:s} because no platepar was found for this FF file!'.format(ff_name))
                 continue
 
         # Convert the FF file name into time
         dt = FFfile.filenameToDatetime(ff_name)
 
         # Extract measurements
-        calib_status, frame_n, x, y, ra, dec, azim, elev, inten, mag = np.array(meteor_meas).T
+        calib_status, frame_n, x, y, ra, dec, azim, elev, inten, mag = np.array(meteor_meas).T[:10]
 
         # If the meteor wasn't calibrated, skip it
         if not np.all(calib_status):

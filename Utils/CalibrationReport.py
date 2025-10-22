@@ -5,6 +5,7 @@ from __future__ import print_function, division, absolute_import
 
 import os
 import json
+import datetime
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,7 +19,7 @@ from RMS.Formats.CALSTARS import readCALSTARS
 from RMS.Formats.FFfile import validFFName, getMiddleTimeFF
 from RMS.Formats.FFfile import read as readFF
 from RMS.Formats.Platepar import Platepar
-from RMS.Formats import StarCatalog
+from RMS.Formats import StarCatalog, FFfile
 from RMS.Routines import Image
 from RMS.Routines.AddCelestialGrid import addEquatorialGrid
 
@@ -56,9 +57,13 @@ def generateCalibrationReport(config, night_dir_path, match_radius=2.0, platepar
 
 
     # Load the calstars file
-    star_list = readCALSTARS(night_dir_path, calstars_file)
+    calstars_data = readCALSTARS(night_dir_path, calstars_file)
+    calstars_list, ff_frames = calstars_data
 
-
+    # If there are no CALSTARS entries, abort the report generation
+    if not calstars_list:
+        print('Calibration report: CALSTARS list is empty - nothing to process.')
+        return None
 
     ### Load recalibrated platepars, if they exist ###
 
@@ -110,10 +115,21 @@ def generateCalibrationReport(config, night_dir_path, match_radius=2.0, platepar
     # Go one mag deeper than in the config
     lim_mag = config.catalog_mag_limit + 1
 
+    ts = FFfile.getMiddleTimeFF(calstars_list[0][0], fps=config.fps, ret_milliseconds=True, dt_obj=True)
+
+    J2000 = datetime.datetime(2000, 1, 1, 12, 0, 0)
+
+    # Compute the number of years from J2000
+    years_from_J2000 = (ts - J2000).total_seconds()/(365.25*24*3600)
+
     # Load catalog stars (load one magnitude deeper)
-    catalog_stars, mag_band_str, config.star_catalog_band_ratios = StarCatalog.readStarCatalog(\
-        config.star_catalog_path, config.star_catalog_file, lim_mag=lim_mag, \
-        mag_band_ratios=config.star_catalog_band_ratios)
+    catalog_stars, mag_band_str, config.star_catalog_band_ratios = StarCatalog.readStarCatalog(
+        config.star_catalog_path,
+        config.star_catalog_file,
+        years_from_J2000=years_from_J2000,
+        lim_mag=lim_mag,
+        mag_band_ratios=config.star_catalog_band_ratios
+    )
 
 
     ### Take only those CALSTARS entires for which FF files exist in the folder ###
@@ -128,7 +144,7 @@ def generateCalibrationReport(config, night_dir_path, match_radius=2.0, platepar
     # Filter out calstars entries, generate a star dictionary where the keys are JDs of FFs
     star_dict = {}
     ff_dict = {}
-    for entry in star_list:
+    for entry in calstars_list:
 
         ff_name, star_data = entry
 
@@ -137,7 +153,7 @@ def generateCalibrationReport(config, night_dir_path, match_radius=2.0, platepar
             continue
 
 
-        dt = getMiddleTimeFF(ff_name, config.fps, ret_milliseconds=True)
+        dt = getMiddleTimeFF(ff_name, config.fps, ret_milliseconds=True, ff_frames=ff_frames)
         jd = date2JD(*dt)
 
         # Add the time and the stars to the dict
@@ -160,14 +176,14 @@ def generateCalibrationReport(config, night_dir_path, match_radius=2.0, platepar
         for ff_name_temp in recalibrated_platepars:
 
             # Compute the Julian date of the FF middle
-            dt = getMiddleTimeFF(ff_name_temp, config.fps, ret_milliseconds=True)
+            dt = getMiddleTimeFF(ff_name_temp, config.fps, ret_milliseconds=True, ff_frames=ff_frames)
             jd = date2JD(*dt)
 
             # Check that this file exists in CALSTARS and the list of FF files
             if (jd not in star_dict) or (jd not in ff_dict):
                 continue
 
-            # Make sure that the chosen file has been successfuly recalibrated
+            # Make sure that the chosen file has been successfully recalibrated
             if "auto_recalibrated" in recalibrated_platepars[ff_name_temp]:
                 if not recalibrated_platepars[ff_name_temp]["auto_recalibrated"]:
                     continue
@@ -299,7 +315,7 @@ def generateCalibrationReport(config, night_dir_path, match_radius=2.0, platepar
 
         ### Plot match residuals ###
 
-        # Compute preducted positions of matched image stars from the catalog
+        # Compute predicted positions of matched image stars from the catalog
         x_predicted, y_predicted = raDecToXYPP(matched_catalog_stars[:, 0], \
             matched_catalog_stars[:, 1], max_jd, platepar)
 
@@ -469,7 +485,7 @@ def generateCalibrationReport(config, night_dir_path, match_radius=2.0, platepar
         if config.use_flat:
             platepar.vignetting_coeff = 0.0
 
-        # Extact intensities and mangitudes
+        # Extract intensities and magnitudes
         star_intensities = image_stars[:, 2]
         catalog_ra, catalog_dec, catalog_mags = matched_catalog_stars.T
 

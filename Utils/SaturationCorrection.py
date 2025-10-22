@@ -3,7 +3,6 @@
 
 from __future__ import absolute_import, division, print_function
 
-import datetime
 import os
 
 import matplotlib.pyplot as plt
@@ -15,6 +14,7 @@ from RMS.Formats.FTPdetectinfo import (findFTPdetectinfoFile,
 from RMS.Routines.Image import applyFlat, loadFlat, thickLine
 
 from Utils.SaturationSimulation import findUnsaturatedMagnitude
+from RMS.Misc import RmsDateTime
 
 if __name__ == "__main__":
 
@@ -111,7 +111,7 @@ if __name__ == "__main__":
             # Go though all meteor centroids
             for line in meteor_meas:
 
-                frame_n, x, y, ra, dec, azim, elev, inten, mag = line
+                frame_n, x, y, ra, dec, azim, elev, inten, mag, background, snr, saturated_count = line
 
                 # Compute the photometric offset
                 photom_offset = mag + 2.5*np.log10(inten)
@@ -142,7 +142,7 @@ if __name__ == "__main__":
                 unsaturated_inten = round(10**((photom_offset - mag)/2.5), 0)
 
                 corrected_meteor_meas.append([frame_n, x, y, ra, dec, azim, elev, unsaturated_inten, 
-                    unsaturated_mag])
+                    unsaturated_mag, background, snr, saturated_count])
 
 
 
@@ -154,7 +154,7 @@ if __name__ == "__main__":
 
 
     # Calibration string to be written to the FTPdetectinfo file
-    calib_str = "RMS - Saturation corrected on {:s} UTC".format(str(datetime.datetime.utcnow()))
+    calib_str = "RMS - Saturation corrected on {:s} UTC".format(str(RmsDateTime.utcnow()))
 
     # Write a corrected FTPdetectinfo file
     corrected_ftpdetectinfo_name = ftpdetectinfo_name.strip('.txt') + '_saturation_corrected.txt'

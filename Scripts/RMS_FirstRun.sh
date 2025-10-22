@@ -3,7 +3,7 @@
 echo "Waiting 10 seconds to init the Pi..."
 echo ""
 echo "IMPORTANT: RMS will first update itself."
-echo "Do not touch any file during the update and do not close this window until RMS starts."
+echo "Do not touch any file during the update and do not close this window."
 sleep 12
 
 # Google DNS server IP
@@ -75,7 +75,7 @@ IMPORTANT! Before you proceed make sure you have the following:
  1. Geo location of your camera (latitude +N, longitude +E, elevation).
    The latitude and longitude should be in degrees to at least 5 decimal
    places. Be careful that the longitude of places in the western hemisphere
-   is negative. E.g. if your camera was installed on the Statue of Libery,
+   is negative. E.g. if your camera was installed on the Statue of Liberty,
    the latitude would be 40.689298 and the longitude would be -74.044479.
    The elevation should be given in meters (NOT feet!) and in the mean sea level
    (MSL) convention (not WGS84).
@@ -102,7 +102,7 @@ Press Q to continue.
 echo "-----------------"
 echo ""
 
-echo "If you DON'T have the geo coordinares and/or the station code, press CTRL + C
+echo "If you DON'T have the geo coordinates and/or the station code, press CTRL + C
 to exit this guide.
 
 Otherwise, press ENTER to continue."
@@ -205,7 +205,7 @@ fi
 
 echo ""
 echo "Updating to the latest version of RMS..."
-bash $RMSUPDATESCRIPT 1
+bash $RMSUPDATESCRIPT
 
 echo ""
 echo "4) Editing the configuration file"
@@ -217,7 +217,7 @@ echo ""
 
 echo "
 If you need to make changes to the configuration file in the future, you can
-find a shorcut to it on desktop (RMS_config), or open it directly in
+find a shortcut to it on desktop (RMS_config), or open it directly in
 $RMSCONFIG.
 "
 

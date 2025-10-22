@@ -1,6 +1,7 @@
 # Sublime files
 *.sublime-project
 *.sublime-workspace
+*.code-workspace
 
 # Recorded BIN/FITS files
 FF*.bin
@@ -15,6 +16,9 @@ platepar*.cal
 
 # Flat
 flat.*
+
+# Astrometry.net cache files
+share/astrometry_cache/*
 
 # Eclipse
 .project
@@ -99,3 +103,6 @@ RMS/Routines/DynamicFTPCompressionCy.c
 RMS/Routines/Grouping3Dcy.c
 RMS/Routines/MorphCy.c
 Utils/SaturationTools.c
+
+# Large GMN catalog that's too big for GitHub
+Catalogs/GMN_StarCatalog_LM12.0.bin

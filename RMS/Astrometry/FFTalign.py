@@ -13,9 +13,9 @@ except ImportError:
 import os
 import sys
 import copy
+import datetime
 import shutil
 import argparse
-import logging
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,7 +28,7 @@ from RMS.Formats.FFfile import getMiddleTimeFF
 from RMS.Formats import Platepar
 from RMS.Formats import StarCatalog
 from RMS.Math import rotatePoint
-from RMS.Logger import initLogging
+from RMS.Logger import initLogging, getLogger
 
 # Import Cython functions
 import pyximport
@@ -36,7 +36,7 @@ pyximport.install(setup_args={'include_dirs':[np.get_include()]})
 from RMS.Astrometry.CyFunctions import subsetCatalog
 
 
-log = logging.getLogger('logger')
+log = getLogger('logger')
 
 
 def addPoint(img, xc, yc, radius):
@@ -200,17 +200,24 @@ def findStarsTransform(config, reference_list, moved_list, img_size=256, dot_rad
 
 
 
-def alignPlatepar(config, platepar, calstars_time, calstars_coords, scale_update=False, show_plot=False):
+def alignPlatepar(config, platepar, calstars_time, calstars_coords, scale_update=False, show_plot=False,
+                  translation_limit=200, rotation_limit=30):
     """ Align the platepar using FFT registration between catalog stars and the given list of image stars.
     Arguments:
         config:
         platepar: [Platepar instance] Initial platepar.
-        calstars_time: [list] A list of (year, month, day, hour, minute, second, millisecond) of the middle of
+        calstars_time: [list] A single entry of (year, month, day, hour, minute, second, millisecond) of the middle of
             the FF file used for alignment.
         calstars_coords: [ndarray] A 2D numpy array of (x, y) coordinates of image stars.
+    
+    
     Keyword arguments:
         scale_update: [bool] Update the platepar scale. False by default.
         show_plot: [bool] Show the comparison between the reference and image synthetic images.
+        translation_limit: [int] Maximum allowed translation in pixels. Default is 200.
+        rotation_limit: [int] Maximum allowed rotation in degrees. Default is 30.
+
+
     Return:
         platepar_aligned: [Platepar instance] The aligned platepar.
     """
@@ -218,6 +225,13 @@ def alignPlatepar(config, platepar, calstars_time, calstars_coords, scale_update
     # Create a copy of the config not to mess with the original config parameters
     config = copy.deepcopy(config)
 
+    year, month, day, hour, minute, second, millisecond = calstars_time
+    ts = datetime.datetime(year, month, day, hour, minute, second, int(round(millisecond * 1000)))
+    J2000 = datetime.datetime(2000, 1, 1, 12, 0, 0)
+
+    # Compute the number of years from J2000
+    years_from_J2000 = (ts - J2000).total_seconds()/(365.25*24*3600)
+    log.info('Loading star catalog with years from J2000: {:.2f}'.format(years_from_J2000))
 
     # Try to optimize the catalog limiting magnitude until the number of image and catalog stars are matched
     maxiter = 10
@@ -226,12 +240,16 @@ def alignPlatepar(config, platepar, calstars_time, calstars_coords, scale_update
     for inum in range(maxiter):
 
         # Load the catalog stars
-        catalog_stars, _, _ = StarCatalog.readStarCatalog(config.star_catalog_path, config.star_catalog_file, \
-            lim_mag=config.catalog_mag_limit, mag_band_ratios=config.star_catalog_band_ratios)
+        catalog_stars, _, _ = StarCatalog.readStarCatalog(
+            config.star_catalog_path,
+            config.star_catalog_file,
+            years_from_J2000=years_from_J2000,
+            lim_mag=config.catalog_mag_limit,
+            mag_band_ratios=config.star_catalog_band_ratios)
 
         # Get the RA/Dec of the image centre
         _, ra_centre, dec_centre, _ = ApplyAstrometry.xyToRaDecPP([calstars_time], [platepar.X_res/2], \
-                [platepar.Y_res/2], [1], platepar, extinction_correction=False)
+                [platepar.Y_res/2], [1], platepar, extinction_correction=False, precompute_pointing_corr=True)
 
         ra_centre = ra_centre[0]
         dec_centre = dec_centre[0]
@@ -284,6 +302,21 @@ def alignPlatepar(config, platepar, calstars_time, calstars_coords, scale_update
     res = findStarsTransform(config, calstars_coords, catalog_xy, show_plot=show_plot)
     angle, scale, translation_x, translation_y = res
 
+    # Check if the translation and rotation are within the limits
+    if (np.hypot(translation_x, translation_y) > translation_limit) or (abs(angle) > rotation_limit):
+        
+        log.warning("The translation or rotation is too large! The platepar will not be updated!")
+        log.warning("Translation: x = {:.2f}, y = {:.2f} px, limit of {:.2f} px".format(
+            translation_x, translation_y, translation_limit))
+        log.warning("Rotation: {:.2f} deg, limit of {:.2f} deg".format(angle, rotation_limit))
+
+        return platepar
+
+    # print()
+    # print('Angle:', angle)
+    # print('Scale:', scale)
+    # print('Translation:', translation_x, translation_y)
+    
 
     ### Update the platepar ###
 
@@ -297,23 +330,25 @@ def alignPlatepar(config, platepar, calstars_time, calstars_coords, scale_update
         platepar_aligned.F_scale *= scale
 
     # Compute the new reference RA and Dec
-    _, ra_centre_new, dec_centre_new, _ = ApplyAstrometry.xyToRaDecPP([jd2Date(platepar.JD)], \
-        [platepar.X_res/2 - platepar.x_poly_fwd[0] - translation_x], \
-        [platepar.Y_res/2 - platepar.y_poly_fwd[0] - translation_y], [1], platepar, \
+    _, ra_centre_new, dec_centre_new, _ = ApplyAstrometry.xyToRaDecPP([jd2Date(platepar_aligned.JD)], \
+        [platepar_aligned.X_res/2 - 2*translation_x], \
+        [platepar_aligned.Y_res/2 - 2*translation_y], [1], platepar_aligned, \
         extinction_correction=False)
+    
+
+    # print("RA:")
+    # print(" - old: {:.5f}".format(ra_centre_old[0]))
+    # print(" - new: {:.5f}".format(ra_centre_new[0]))
+    # print("Dec:")
+    # print(" - old: {:.5f}".format(dec_centre_old[0]))
+    # print(" - new: {:.5f}".format(dec_centre_new[0]))
 
     # Correct RA/Dec
     platepar_aligned.RA_d = ra_centre_new[0]
     platepar_aligned.dec_d = dec_centre_new[0]
 
-    # # Update the reference time and hour angle
-    # platepar_aligned.JD = jd
-    # platepar_aligned.Ho = JD2HourAngle(jd)
-
     # Recompute the FOV centre in Alt/Az and update the rotation
-    platepar_aligned.az_centre, platepar_aligned.alt_centre = raDec2AltAz(platepar.RA_d, \
-        platepar.dec_d, platepar.JD, platepar.lat, platepar.lon)
-    platepar_aligned.rotation_from_horiz = ApplyAstrometry.rotationWrtHorizon(platepar_aligned)
+    platepar_aligned.updateRefAltAz()
 
     ###
 
@@ -352,8 +387,7 @@ if __name__ == "__main__":
     initLogging(config, 'fftalign_')
 
     # Get the logger handle
-    log = logging.getLogger("logger")
-    log.setLevel(logging.INFO)
+    log = getLogger("logger", level="INFO")
 
     # Get a list of files in the night folder
     file_list = os.listdir(dir_path)
@@ -382,7 +416,14 @@ if __name__ == "__main__":
         sys.exit()
 
     # Load the calstars file
-    calstars_list = CALSTARS.readCALSTARS(dir_path, calstars_file)
+    calstars_data = CALSTARS.readCALSTARS(dir_path, calstars_file)
+    calstars_list, ff_frames = calstars_data
+
+    # Bail out gracefully if the CALSTARS list is empty
+    if not calstars_list:
+        log.warning("FFTalign: CALSTARS list is empty - nothing to align")
+        sys.exit()
+        
     calstars_dict = {ff_file: star_data for ff_file, star_data in calstars_list}
 
     log.info('CALSTARS file: ' + calstars_file + ' loaded!')
@@ -395,7 +436,7 @@ if __name__ == "__main__":
     calstars_coords[:, [0, 1]] = calstars_coords[:, [1, 0]]
 
     # Get the time of the FF file
-    calstars_time = getMiddleTimeFF(max_len_ff, config.fps, ret_milliseconds=True)
+    calstars_time = getMiddleTimeFF(max_len_ff, config.fps, ret_milliseconds=True, ff_frames=ff_frames)
 
 
 

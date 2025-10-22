@@ -2,7 +2,6 @@ from __future__ import print_function
 
 import os
 import sys
-import logging
 import traceback
 import time
 import functools
@@ -10,6 +9,7 @@ import multiprocessing
 import multiprocessing.dummy
 
 from RMS.Pickling import savePickle, loadPickle
+from RMS.Logger import getLogger
 from RMS.Misc import randomCharacters, isListKeyInDict, listToTupleRecursive
 
 
@@ -75,7 +75,7 @@ class BackupContainer(object):
             saved to disk when the worker function finishes, and can be later restored. 
         """
 
-        # Take the input list a tuple, as it has to be imutable to be a dictionary key
+        # Take the input list a tuple, as it has to be immutable to be a dictionary key
         self.inputs = listToTupleRecursive(inputs)
 
         self.outputs = outputs
@@ -127,7 +127,7 @@ class QueuedPool(object):
 
 
         # If cores are negative, use the total available cores minus the given number
-        if cores < 0:
+        if cores <= 0:
 
             cores = multiprocessing.cpu_count() + cores
 
@@ -160,7 +160,7 @@ class QueuedPool(object):
         # blocking when using get_nowait)
         manager = multiprocessing.Manager()
 
-        # Only init with maxsize if given, otherwise it return a TypeErorr when fed data from Compressor
+        # Only init with maxsize if given, otherwise it return a TypeError when fed data from Compressor
         if input_queue_maxsize is None:
             self.input_queue = manager.Queue()
         else:
@@ -244,7 +244,12 @@ class QueuedPool(object):
         for file_name in self._listBackupFiles():
 
             # Load the backup file
-            bkup_obj = loadPickle(self.bkup_dir, file_name)
+            try:
+                bkup_obj = loadPickle(self.bkup_dir, file_name)
+            except Exception as e:
+                self.printAndLog('Failed loading backup file:', file_name)
+                self.printAndLog(repr(e))
+                continue
 
             if bkup_obj is None:
                 continue
@@ -388,12 +393,20 @@ class QueuedPool(object):
         if cores is not None:
             self.cores.set(cores)
 
+        # Get the value once and use it locally
+        core_value = self.cores.value()
+        if core_value < 1:
+            self.printAndLog('WARNING: Core count was {:d}, using minimum of 1'.format(core_value))
+            self.cores.set(1)
+            num_cores = 1
+        else:
+            num_cores = core_value
 
-        self.printAndLog('Using {:d} cores'.format(self.cores.value()))
+        self.printAndLog('Using {:d} cores'.format(num_cores))
 
         # Initialize the pool of workers with the given number of worker cores
         # Comma in the argument list is a must!
-        self.pool = multiprocessing.Pool(self.cores.value(), self._workerFunc, (self.func, ))
+        self.pool = multiprocessing.Pool(num_cores, self._workerFunc, (self.func, ))
 
 
 
@@ -674,9 +687,8 @@ if __name__ == "__main__":
 
     # # Init logging
     # logging.basicConfig()
-    # log = logging.getLogger('logger')
-    # log.setLevel(logging.INFO)
-    # log.setLevel(logging.DEBUG)
+    # log = getLogger('logger', level="INFO")
+     # log = getLogger('logger', level="DEBUG")
 
     log = None
 

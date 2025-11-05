@@ -49,44 +49,47 @@ read -p  "Enter the RPi's IP address: " TargetIP
 		break
 	fi
 # we assume the default user for the host is pi
-RmsUser=pi
+if [[ "$RMSUSER" == "" ]] ; then RmsUser=pi ; else RmsUser=$RMSUSER ; fi
+echo -e "\nRemote user is $RmsUser, if this is incorrect press Ctrl-C and set an env variable RMSUSER before running this script\n"
+
 if ( ! ping -c1 -W1 ${TargetIP} >/dev/null 2>&1 ) # is host reachable
 	then
 	if ( nc -z -w 3 ${TargetIP} 22 2>/dev/null ) # host is reachable and port 22 SSH open
-        	then
-                continue
-                else 
-                echo -e "\nhost ${TargetIP} is reachable , however port 22 is not open. - have you enabled the SSH daemon on this host?"
-                exit
+	then
+		continue
+		else 
+		echo -e "\nhost ${TargetIP} is reachable , however port 22 is not open. - have you enabled the SSH daemon on this host?"
+		exit
 	fi
 	echo -e "\nHost is not reachable"
 fi
 
-	echo -e "\n\nIf this hosts keys are not present on $TargetIP, you will be asked to add the hosts unique fingerprint to your .ssh/known_hosts file - when prompted answer 'yes' "
-	echo -e "You will then be prompted for user pi's password to copy the key to the authorized_keys file located in .ssh on $TargetHost\n\n"
-	ssh-copy-id $RmsUser@$TargetIP
-        scp $RmsUser@$TargetIP:~/source/RMS/.config .
-        scp $RmsUser@$TargetIP:~/source/RMS/mask.bmp .
-        scp $RmsUser@$TargetIP:~/source/RMS/platepar_cmn2010.cal .
-        scp $RmsUser@$TargetIP:~/.ssh/id_rsa .
+echo -e "\n\nIf this hosts keys are not present on $TargetIP, you will be asked to add the hosts unique fingerprint to your .ssh/known_hosts file - when prompted answer 'yes' "
+echo -e "You will then be prompted for user pi's password to copy the key to the authorized_keys file located in .ssh on $TargetHost\n\n"
+ssh-copy-id $RmsUser@$TargetIP
+scp $RmsUser@$TargetIP:~/source/RMS/.config .
+scp $RmsUser@$TargetIP:~/source/RMS/mask.bmp .
+scp $RmsUser@$TargetIP:~/source/RMS/platepar_cmn2010.cal .
+scp $RmsUser@$TargetIP:~/.ssh/id_rsa .
 
 # check the station  has been configured ...
-	Station=$( awk '/stationID:/ {print $2}' .config )
-	if [[ ! -f ~/source/Stations/$Station ]]
+Station=$( awk '/stationID:/ {print $2}' .config )
+if [[ ! -f ~/source/Stations/$Station ]]
+then
 	echo -e "\n\n Found station ${Station} ! \n"
-	then
-		mv .config ~/source/Stations/$Station/ 
-		mv mask.bmp  ~/source/Stations/$Station/ 
-		mv platepar_cmn2010.cal ~/source/Stations/$Station/
-		mv id_rsa ~/.ssh/${Station}_id_rsa # take the RPi's private key and place it in ~/.ssh with the station name prepending it
-		sed -i "s/data_dir.*$/data_dir: ~\/RMS_data\/${Station}/g" ~/source/Stations/${Station}/.config
-		sed -i "s/\(.*key:\).*/\1 ~\/.ssh\/${Station}_id_rsa/g" ~/source/Stations/${Station}/.config # update path to this stations unique key
-		echo -e "\n\nStations ${Station}'s .config had been moved and RMS_data location updated, mask.bmp and platepar_cmn2010.cal have been moved unchanged"
-		echo -e "and its private key have been placed in ~/.ssh and renamed ${Station}_id_rsa\n"
-	else
+	mkdir -p ~/source/Stations/$Station
+	mv .config ~/source/Stations/$Station/ 
+	mv mask.bmp  ~/source/Stations/$Station/ 
+	mv platepar_cmn2010.cal ~/source/Stations/$Station/
+	mv id_rsa ~/.ssh/${Station}_id_rsa # take the RPi's private key and place it in ~/.ssh with the station name prepending it
+	sed -i "s/data_dir.*$/data_dir: ~\/RMS_data\/${Station}/g" ~/source/Stations/${Station}/.config
+	sed -i "s/\(.*key:\).*/\1 ~\/.ssh\/${Station}_id_rsa/g" ~/source/Stations/${Station}/.config # update path to this stations unique key
+	echo -e "\n\nStations ${Station}'s .config had been moved and RMS_data location updated, mask.bmp and platepar_cmn2010.cal have been moved unchanged"
+	echo -e "and its private key have been placed in ~/.ssh and renamed ${Station}_id_rsa\n"
+else
 	echo -e "\n$Station has not been configured on this host\n"
 	# cleanup the migrate dir in case a mv failed...
 	rm  .config mask.bmp platepar_cmn2010.cal
-	fi	
-cd -
+fi	
+cd ~
 rmdir migrate

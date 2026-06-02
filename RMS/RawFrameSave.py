@@ -105,7 +105,7 @@ class RawFrameSaver(multiprocessing.Process):
 
             # Handle when frame has only two channels (yuyv/uyvy)
             # OpenCV only supports 1, 3, or 4 color channels
-            if len(frame.shape) == 3 and frame.shape[2] == 2:
+            if (len(frame.shape) == 3) and (frame.shape[2] == 2):
                 # If UYVY image given, luma (Y) channel is channel 1
                 if self.config.uyvy_pixelformat:
                     frame = frame[:, :, 1]

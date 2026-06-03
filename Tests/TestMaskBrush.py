@@ -196,16 +196,11 @@ class TestResidualDetection:
             if len(points) >= 3:
                 loaded_polygons.append(points)
 
-        # Regenerate from loaded polygons
-        remask = generate_mask_image(loaded_polygons, None, w, h)
-        # The loaded mask might not exactly match due to polygon simplification
-        # If they differ, residuals should be detected
-        if not np.array_equal(mask, remask):
-            residual = compute_residuals(mask, loaded_polygons)
-            assert residual is not None
-        else:
-            residual = compute_residuals(mask, loaded_polygons)
-            assert residual is None
+        # Round-trip via residual detection must recover the original mask exactly
+        residual = compute_residuals(mask, loaded_polygons)
+        remask = generate_mask_image(loaded_polygons, residual, w, h)
+        np.testing.assert_array_equal(mask, remask,
+            err_msg="Brush stroke round-trip via residual detection lost pixels")
 
     def test_erase_inside_polygon_creates_residual(self):
         w, h = 100, 80

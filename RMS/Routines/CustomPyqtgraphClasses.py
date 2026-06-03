@@ -3109,9 +3109,40 @@ class StarDetectionWidget(QtWidgets.QWidget, ScaledSizeHelper):
             self.roundness_threshold_slider.setValue(int(config.roundness_threshold * 100))
 
 
+class BrushCursorItem(pg.GraphicsObject):
+    """Circle outline that follows the mouse in brush mask mode.
+
+    The radius is in image coordinates (scales with zoom) but the pen is cosmetic
+    (always 1 px on screen) so the outline stays crisp at any zoom level.
+    """
+    def __init__(self):
+        super().__init__()
+        self._radius = 20.0
+        self._pen = QtGui.QPen(QtGui.QColor(0, 255, 255, 200))
+        self._pen.setCosmetic(True)
+        self._pen.setWidth(2)
+
+    def setRadius(self, r):
+        self._radius = float(r)
+        self.prepareGeometryChange()
+        self.update()
+
+    def setCenter(self, pos):
+        self.setPos(pos)
+
+    def paint(self, painter, option, widget=None):
+        painter.setPen(self._pen)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.drawEllipse(QtCore.QPointF(0, 0), self._radius, self._radius)
+
+    def boundingRect(self):
+        r = self._radius + 2
+        return QtCore.QRectF(-r, -r, 2*r, 2*r)
+
+
 class MaskWidget(QtWidgets.QWidget, ScaledSizeHelper):
     """
-    Widget for creating and editing mask polygons.
+    Widget for creating and editing mask polygons and brush strokes.
     Click to add points, right-click to close polygon.
     """
     sigDrawModeToggled = QtCore.pyqtSignal()
@@ -3122,6 +3153,10 @@ class MaskWidget(QtWidgets.QWidget, ScaledSizeHelper):
     sigUnsavedChanged = QtCore.pyqtSignal()
     sigUseFlatToggled = QtCore.pyqtSignal(bool)
     sigInvertMask = QtCore.pyqtSignal()
+    sigBrushModeToggled = QtCore.pyqtSignal()
+    sigClearBrushStrokes = QtCore.pyqtSignal()
+    sigBrushSizeChanged = QtCore.pyqtSignal(int)
+    sigUndoBrushStroke = QtCore.pyqtSignal()
 
     def __init__(self, gui):
         QtWidgets.QWidget.__init__(self)
@@ -3138,19 +3173,11 @@ class MaskWidget(QtWidgets.QWidget, ScaledSizeHelper):
         title.setStyleSheet("font-weight: bold; font-size: 11pt;")
         layout.addWidget(title)
 
-        # Instructions
-        self.instructions = QtWidgets.QLabel(
-            '<b>Draw:</b><br>'
-            '• Click to add points<br>'
-            '• Space/Enter to close polygon<br><br>'
-            '<b>Edit:</b><br>'
-            '• Drag vertices to move<br>'
-            '• Right-click vertex to delete<br>'
-            '• Ctrl+click edge to add vertex<br><br>'
-            'Vertices near image border<br>'
-            'will snap to the edge.')
+        # Instructions (updated dynamically based on active mode)
+        self.instructions = QtWidgets.QLabel()
         self.instructions.setWordWrap(True)
         layout.addWidget(self.instructions)
+        self._updateInstructions()
 
         layout.addSpacing(self.scaledSpacing(0.6))
 
@@ -3162,8 +3189,42 @@ class MaskWidget(QtWidgets.QWidget, ScaledSizeHelper):
 
         layout.addSpacing(self.scaledSpacing(0.3))
 
-        # Clear all button
-        self.clear_button = QtWidgets.QPushButton('Clear All')
+        # Paint brush button (toggle)
+        self.brush_button = QtWidgets.QPushButton('Paint Brush')
+        self.brush_button.setCheckable(True)
+        self.brush_button.clicked.connect(self.onBrushToggled)
+        layout.addWidget(self.brush_button)
+
+        # Brush size slider
+        brush_size_layout = QtWidgets.QHBoxLayout()
+        brush_size_layout.setSpacing(self.scaledSpacing(0.25))
+        brush_size_label = QtWidgets.QLabel('Size:')
+        brush_size_layout.addWidget(brush_size_label)
+        self.brush_size_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.brush_size_slider.setRange(1, 200)
+        self.brush_size_slider.setValue(20)
+        self.brush_size_slider.valueChanged.connect(self._onBrushSizeChanged)
+        brush_size_layout.addWidget(self.brush_size_slider)
+        self.brush_size_value = QtWidgets.QLabel('20')
+        self.brush_size_value.setMinimumWidth(self.scaledSpacing(2))
+        brush_size_layout.addWidget(self.brush_size_value)
+        layout.addLayout(brush_size_layout)
+
+        # Undo brush stroke button
+        self.undo_brush_button = QtWidgets.QPushButton('Undo Brush (Ctrl+Z)')
+        self.undo_brush_button.setEnabled(False)
+        self.undo_brush_button.clicked.connect(self.sigUndoBrushStroke.emit)
+        layout.addWidget(self.undo_brush_button)
+
+        # Clear brush strokes button
+        self.clear_brush_button = QtWidgets.QPushButton('Clear Brush Strokes')
+        self.clear_brush_button.clicked.connect(self.onClearBrush)
+        layout.addWidget(self.clear_brush_button)
+
+        layout.addSpacing(self.scaledSpacing(0.3))
+
+        # Clear all polygons button
+        self.clear_button = QtWidgets.QPushButton('Clear All Polygons')
         self.clear_button.clicked.connect(self.onClearAll)
         layout.addWidget(self.clear_button)
 
@@ -3218,14 +3279,41 @@ class MaskWidget(QtWidgets.QWidget, ScaledSizeHelper):
 
         layout.addStretch()
 
+    def _updateInstructions(self):
+        """Update instructions text based on active mode."""
+        if hasattr(self, 'brush_button') and self.brush_button.isChecked():
+            self.instructions.setText(
+                '<b>Paint Brush:</b><br>'
+                '&bull; Left-click drag to mask<br>'
+                '&bull; Right-click drag to erase<br>'
+                '&bull; Scroll wheel to resize brush<br>'
+                '&bull; Ctrl+Z to undo last stroke')
+        else:
+            self.instructions.setText(
+                '<b>Draw Polygon:</b><br>'
+                '&bull; Click to add points<br>'
+                '&bull; Space/Enter to close polygon<br><br>'
+                '<b>Edit:</b><br>'
+                '&bull; Drag vertices to move<br>'
+                '&bull; Right-click vertex to delete<br>'
+                '&bull; Ctrl+click edge to add vertex<br><br>'
+                'Vertices near image border<br>'
+                'will snap to the edge.')
+
     def onDrawToggled(self):
         """Handle draw button toggle."""
         if self.draw_button.isChecked():
             self.draw_button.setText('Drawing... (Space to close)')
             self.draw_button.setStyleSheet("background-color: #FFA500;")
+            if self.brush_button.isChecked():
+                self.brush_button.setChecked(False)
+                self.brush_button.setText('Paint Brush')
+                self.brush_button.setStyleSheet("")
+                self.sigBrushModeToggled.emit()
         else:
             self.draw_button.setText('Draw Polygon')
             self.draw_button.setStyleSheet("")
+        self._updateInstructions()
         self.sigDrawModeToggled.emit()
 
     def setDrawMode(self, enabled):
@@ -3237,35 +3325,77 @@ class MaskWidget(QtWidgets.QWidget, ScaledSizeHelper):
         else:
             self.draw_button.setText('Draw Polygon')
             self.draw_button.setStyleSheet("")
+        self._updateInstructions()
+
+    def onBrushToggled(self):
+        """Handle brush button toggle."""
+        if self.brush_button.isChecked():
+            self.brush_button.setText('Painting...')
+            self.brush_button.setStyleSheet("background-color: #00BFFF;")
+            if self.draw_button.isChecked():
+                self.draw_button.setChecked(False)
+                self.draw_button.setText('Draw Polygon')
+                self.draw_button.setStyleSheet("")
+                self.sigDrawModeToggled.emit()
+        else:
+            self.brush_button.setText('Paint Brush')
+            self.brush_button.setStyleSheet("")
+        self._updateInstructions()
+        self.sigBrushModeToggled.emit()
+
+    def setBrushMode(self, enabled):
+        """Set brush mode from external call."""
+        self.brush_button.setChecked(enabled)
+        if enabled:
+            self.brush_button.setText('Painting...')
+            self.brush_button.setStyleSheet("background-color: #00BFFF;")
+        else:
+            self.brush_button.setText('Paint Brush')
+            self.brush_button.setStyleSheet("")
+        self._updateInstructions()
+
+    def _onBrushSizeChanged(self, value):
+        """Handle brush size slider change."""
+        self.brush_size_value.setText(str(value))
+        self.sigBrushSizeChanged.emit(value)
 
     def onClearAll(self):
         """Confirm and clear all polygons."""
-        reply = QtWidgets.QMessageBox.question(self, 'Clear All',
+        reply = QtWidgets.QMessageBox.question(self, 'Clear Polygons',
             'Delete all mask polygons?',
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
         if reply == QtWidgets.QMessageBox.Yes:
             self.sigClearPolygons.emit()
 
-    def updateStatus(self, polygon_count, drawing_points=0):
+    def onClearBrush(self):
+        """Confirm and clear all brush strokes."""
+        reply = QtWidgets.QMessageBox.question(self, 'Clear Brush Strokes',
+            'Delete all brush strokes?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if reply == QtWidgets.QMessageBox.Yes:
+            self.sigClearBrushStrokes.emit()
+
+    def updateStatus(self, polygon_count, drawing_points=0, has_brush_strokes=False):
         """Update the status label."""
 
         if drawing_points > 0:
             self.status_label.setText(f'Drawing: {drawing_points} points')
             self.status_label.setStyleSheet("color: orange; font-size: 9pt;")
-        elif polygon_count == 0:
-            if self.unsaved:
-                self.status_label.setText('No polygons (unsaved)')
-                self.status_label.setStyleSheet("color: orange; font-size: 9pt;")
-            else:
-                self.status_label.setText('No polygons')
-                self.status_label.setStyleSheet("color: gray; font-size: 9pt;")
         else:
-            if self.unsaved:
-                self.status_label.setText(f'{polygon_count} polygon(s) (unsaved)')
+            has_data = polygon_count > 0 or has_brush_strokes
+
+            if self.unsaved and has_data:
+                self.status_label.setText('Mask modified (unsaved)')
                 self.status_label.setStyleSheet("color: orange; font-size: 9pt;")
-            else:
-                self.status_label.setText(f'{polygon_count} polygon(s) - saved')
+            elif self.unsaved:
+                self.status_label.setText('Mask cleared (unsaved)')
+                self.status_label.setStyleSheet("color: orange; font-size: 9pt;")
+            elif has_data:
+                self.status_label.setText('Mask saved')
                 self.status_label.setStyleSheet("color: green; font-size: 9pt;")
+            else:
+                self.status_label.setText('No mask')
+                self.status_label.setStyleSheet("color: gray; font-size: 9pt;")
 
     def setUnsaved(self, unsaved=True):
         """Mark polygons as having unsaved changes."""
